@@ -1,0 +1,345 @@
+{
+  "name": "07 - Competitor Price Monitor",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * *"
+            }
+          ]
+        }
+      },
+      "id": "4ca887de-b04e-41e9-a0f4-e7e1a00be168",
+      "name": "Daily 8am Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1616,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Define your competitors to monitor\n// Each entry: { name, url, priceSelector (CSS-like hint for extraction) }\nconst competitors = [\n  { name: 'Competitor A', url: $env.COMPETITOR_A_URL || 'https://competitor-a.com/pricing', hint: 'plan-price' },\n  { name: 'Competitor B', url: $env.COMPETITOR_B_URL || 'https://competitor-b.com/pricing', hint: 'pricing-amount' },\n  { name: 'Competitor C', url: $env.COMPETITOR_C_URL || 'https://competitor-c.com/pricing', hint: 'price-value' },\n];\nreturn competitors.map(c => ({ json: c }));\n"
+      },
+      "id": "2878892f-4a7f-4d0a-8ab9-417da4c69380",
+      "name": "Build Competitor List",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1392,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            },
+            {
+              "name": "Accept",
+              "value": "text/html,application/xhtml+xml"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "id": "142917fd-1150-482a-8b9d-b62aaf78de07",
+      "name": "Fetch Pricing Page",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -1168,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const html = $json.data || '';\nconst competitor = $('Build Competitor List').item.json;\n\n// Extract price patterns — adjust these patterns for each competitor\nconst patterns = [\n  /\\$([\\d,]+(?:\\.\\d{2})?)\\/(?:mo|month)/i,\n  /£([\\d,]+(?:\\.\\d{2})?)\\/(?:mo|month)/i,\n  /€([\\d,]+(?:\\.\\d{2})?)\\/(?:mo|month)/i,\n  /([\\d,]+(?:\\.\\d{2})?)\\s*(?:per|\\/)\\s*(?:month|mo)/i,\n];\n\nlet extracted_price = null;\nfor (const pattern of patterns) {\n  const match = html.match(pattern);\n  if (match) {\n    extracted_price = parseFloat(match[1].replace(/,/g, ''));\n    break;\n  }\n}\n\nreturn {\n  json: {\n    competitor: competitor.name,\n    url: competitor.url,\n    price_today: extracted_price,\n    extracted_at: new Date().toISOString(),\n    parse_success: extracted_price !== null\n  }\n};\n"
+      },
+      "id": "07b20723-fa77-4f2b-853d-62dd44546d19",
+      "name": "Extract Prices",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -944,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "getRows",
+        "documentId": {
+          "value": "REPLACE_WITH_SHEET_ID",
+          "__rl": true,
+          "mode": "id"
+        }
+      },
+      "id": "93179a16-d8fa-4f02-bc9b-5a982d52a6bd",
+      "name": "Get Yesterday Price",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -720,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const today = $('Extract Prices').item.json;\nconst yesterday_row = $json;\nconst prev_price = parseFloat(yesterday_row.Price_Today || 0);\nconst curr_price = today.price_today;\nconst changed = curr_price !== null && prev_price !== 0 && Math.abs(curr_price - prev_price) > 1;\nconst change_pct = prev_price > 0 ? (((curr_price - prev_price) / prev_price) * 100).toFixed(1) : 'N/A';\nreturn { json: { ...today, prev_price, price_changed: changed, change_pct, direction: curr_price > prev_price ? '⬆️' : '⬇️' } };\n"
+      },
+      "id": "0689d1ec-96a4-4e23-a04a-0fe4d3e149a3",
+      "name": "Compare Prices",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -496,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "change-check",
+              "leftValue": "={{ $json.price_changed }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "ac9faf9e-1660-4271-8438-c8b160556179",
+      "name": "Price Changed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -272,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "value": "#pricing-intel",
+          "__rl": true,
+          "mode": "name"
+        },
+        "text": "{{ $json.direction }} *Price Change Detected!*\n\n*Competitor:* {{ $json.competitor }}\n*Old Price:* £{{ $json.prev_price }}/mo\n*New Price:* £{{ $json.price_today }}/mo\n*Change:* {{ $json.change_pct }}%\n\n🔗 {{ $json.url }}\n_Detected: {{ $json.extracted_at }}_",
+        "otherOptions": {
+          "mrkdwn": true
+        }
+      },
+      "id": "7bfafcca-8b33-4817-803a-1daf7aa57ee9",
+      "name": "Price Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        -48,
+        272
+      ],
+      "webhookId": "21c6d09f-f576-40b7-bb59-0c987a659056"
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "value": "REPLACE_WITH_SHEET_ID",
+          "__rl": true,
+          "mode": "id"
+        },
+        "sheetName": {
+          "value": "Price History",
+          "__rl": true,
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Date": "={{ $json.extracted_at }}",
+            "Competitor": "={{ $json.competitor }}",
+            "Price_Today": "={{ $json.price_today }}",
+            "Previous_Price": "={{ $json.prev_price }}",
+            "Change_Pct": "={{ $json.change_pct }}",
+            "Changed": "={{ $json.price_changed }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "e165e0b4-cb57-4e92-ae97-3365bee4046e",
+      "name": "Log Price History",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        176,
+        368
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 07 — Competitor Price Monitor\n\n**Setup:**\n1. Set COMPETITOR_A_URL, COMPETITOR_B_URL, COMPETITOR_C_URL as env variables\n2. Update price regex patterns in 'Extract Prices' node for each competitor's HTML structure\n3. Create a Google Sheet with a tab 'Price History' — columns: Date, Competitor, Price_Today, Previous_Price, Change_Pct, Changed\n4. Replace all credential IDs\n\n**Tip:** Use browser DevTools to inspect competitor pricing pages and identify the correct regex pattern for their price format.",
+        "height": 736,
+        "width": 2064
+      },
+      "id": "4e40c9db-2298-44df-9a2e-159732f3106c",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1680,
+        -16
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Daily 8am Trigger": {
+      "main": [
+        [
+          {
+            "node": "Build Competitor List",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Competitor List": {
+      "main": [
+        [
+          {
+            "node": "Fetch Pricing Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Pricing Page": {
+      "main": [
+        [
+          {
+            "node": "Extract Prices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Prices": {
+      "main": [
+        [
+          {
+            "node": "Get Yesterday Price",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Yesterday Price": {
+      "main": [
+        [
+          {
+            "node": "Compare Prices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compare Prices": {
+      "main": [
+        [
+          {
+            "node": "Price Changed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Price Changed?": {
+      "main": [
+        [
+          {
+            "node": "Price Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Price History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Price Alert": {
+      "main": [
+        [
+          {
+            "node": "Log Price History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "65885aef-1da0-449f-9220-93df9f52f967",
+  "meta": {
+    "instanceId": "a68e86bb011358047357560db41b5697f3f34c05caa0129e8b53eebd8d3a6168"
+  },
+  "id": "uT9k9IT1adUXPtVX",
+  "tags": [
+    {
+      "name": "Data",
+      "id": "5KbLNplF3Sq9mH3B",
+      "updatedAt": "2026-04-28T19:18:56.839Z",
+      "createdAt": "2026-04-28T19:18:56.839Z"
+    },
+    {
+      "name": "Analytics",
+      "id": "SR2sQOwfJRF7LorP",
+      "updatedAt": "2026-04-28T19:11:31.537Z",
+      "createdAt": "2026-04-28T19:11:31.537Z"
+    }
+  ]
+}

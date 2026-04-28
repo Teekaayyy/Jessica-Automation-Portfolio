@@ -1,0 +1,237 @@
+{
+  "name": "01 - Lead Intelligence Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "new-lead",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "ed9dd922-d9fe-46ac-be1f-52b81dbd445d",
+      "name": "New Lead Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "d5040c50-fe61-4d70-a10e-adbdb53479f7"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.apollo.io/v1/people/match",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "api_key",
+              "value": "={{ $env.APOLLO_API_KEY }}"
+            },
+            {
+              "name": "email",
+              "value": "={{ $json.body.email }}"
+            },
+            {
+              "name": "first_name",
+              "value": "={{ $json.body.firstname }}"
+            },
+            {
+              "name": "organization_name",
+              "value": "={{ $json.body.company }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "3e8caa37-dd3d-4843-bfca-99aa8df6a40d",
+      "name": "Enrich via Apollo",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        224,
+        0
+      ],
+      "notes": "Set APOLLO_API_KEY as an n8n environment variable. Free tier: 50 enrichments/month."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "apollo-check",
+              "leftValue": "={{ $json.person }}",
+              "rightValue": "",
+              "operator": {
+                "type": "object",
+                "operation": "exists"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "d30c95c7-6b9f-462d-8bb0-022376d151d6",
+      "name": "Valid Profile?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        448,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "additionalFields": {},
+        "options": {}
+      },
+      "id": "7aa2d3d5-7456-4b24-a0ef-f7e78e95bcfb",
+      "name": "Create/Update Contact",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        688,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "value": "#new-leads",
+          "__rl": true,
+          "mode": "name"
+        },
+        "text": "🎯 *New Lead Ready*\n\n*Name:* {{ $json.properties.firstname }} {{ $json.properties.lastname }}\n*Company:* {{ $json.properties.company }}\n*Title:* {{ $json.properties.jobtitle }}\n*Email:* {{ $json.properties.email }}\n\n<https://app.hubspot.com/contacts/{{ $json.id }}|View in HubSpot →>",
+        "otherOptions": {
+          "mrkdwn": true
+        }
+      },
+      "id": "a6ff3814-3abe-49f6-b453-aa8ab8b3ad80",
+      "name": "Notify Sales Rep",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        880,
+        -16
+      ],
+      "webhookId": "b3699526-372e-453f-ae51-a159f43b0fa9"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\"status\":\"received\",\"message\":\"Lead is being enriched and added to CRM.\"}",
+        "options": {}
+      },
+      "id": "ac5659a6-af40-4b37-98d5-134d95c936d6",
+      "name": "Webhook Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        688,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 01 — Lead Intelligence Pipeline\n\nWebhook receives form submission → Apollo.io enriches the profile → HubSpot contact created via upsert → Slack notification to assigned rep.\n\n**Setup:**\n1. Set APOLLO_API_KEY as an n8n env variable\n2. Replace all credential IDs\n3. Update Slack channel name\n4. Map your form fields to the webhook payload fields",
+        "height": 668,
+        "width": 1292
+      },
+      "id": "1776afd7-28de-4e5c-ab6c-65b576372892",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -112,
+        -272
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "New Lead Trigger": {
+      "main": [
+        [
+          {
+            "node": "Enrich via Apollo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enrich via Apollo": {
+      "main": [
+        [
+          {
+            "node": "Valid Profile?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid Profile?": {
+      "main": [
+        [
+          {
+            "node": "Create/Update Contact",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Webhook Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create/Update Contact": {
+      "main": [
+        [
+          {
+            "node": "Notify Sales Rep",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "d044f403-6c06-4e57-94e1-c93b9aa6c522",
+  "meta": {
+    "instanceId": "a68e86bb011358047357560db41b5697f3f34c05caa0129e8b53eebd8d3a6168"
+  },
+  "id": "ZzczPWqPnywkrjh2",
+  "tags": [
+    {
+      "name": "CRM",
+      "id": "NxhBfn0F7UAZJC6y",
+      "updatedAt": "2026-04-28T19:01:16.094Z",
+      "createdAt": "2026-04-28T19:01:16.094Z"
+    },
+    {
+      "name": "Lead Gen",
+      "id": "z9QxumNueVm11ZZk",
+      "updatedAt": "2026-04-28T19:01:16.017Z",
+      "createdAt": "2026-04-28T19:01:16.017Z"
+    }
+  ]
+}

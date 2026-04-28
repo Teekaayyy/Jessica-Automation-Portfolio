@@ -1,0 +1,524 @@
+{
+  "name": "20 - Customer Onboarding Orchestrator",
+  "nodes": [
+    {
+      "parameters": {
+        "eventsUi": {
+          "eventValues": [
+            {
+              "name": "contact.propertyChange"
+            }
+          ]
+        },
+        "additionalFields": {}
+      },
+      "id": "40467527-7be3-4e1d-b3c5-7530b16363a9",
+      "name": "New Customer Trigger",
+      "type": "n8n-nodes-base.hubspotTrigger",
+      "typeVersion": 1,
+      "position": [
+        -3072,
+        528
+      ],
+      "webhookId": "a006d3b4-1073-43d1-bd9a-bd97c7af304a"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "customer-check",
+              "leftValue": "={{ $json.propertyValue }}",
+              "rightValue": "customer",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a3be27a5-040d-4e91-a194-e6a8a23d076a",
+      "name": "Is New Customer?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -2848,
+        528
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "contactId": "={{ $json.objectId }}",
+        "additionalFields": {}
+      },
+      "id": "8b7cce81-94f8-4c28-9eff-fd4f20c00bce",
+      "name": "Get Contact Details",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        -2624,
+        528
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.properties.email?.value }}",
+        "subject": "=Welcome to {{ $env.PRODUCT_NAME || 'our platform' }}, {{ $json.properties.firstname?.value || 'there' }}! 🎉",
+        "message": "=<html><body style=\"font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333;\">\n<h2>Welcome, {{ $json.properties.firstname?.value || 'there' }}! 🎉</h2>\n<p>We're so excited to have you on board. Here's everything you need to get started:</p>\n<h3>Your first 3 steps:</h3>\n<ol>\n<li>✅ <strong>Complete your profile</strong> — takes 2 minutes</li>\n<li>📥 <strong>Import your first dataset</strong> — we'll walk you through it</li>\n<li>🔗 <strong>Connect your first integration</strong> — choose from 50+ tools</li>\n</ol>\n<p>Questions? Just reply to this email — we're here to help.</p>\n<p>Best,<br/>The {{ $env.PRODUCT_NAME || '' }} Team</p>\n</body></html>",
+        "options": {}
+      },
+      "id": "7c197309-f2e6-4a0c-9d53-29c652edcead",
+      "name": "Day 0 Welcome Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        -2400,
+        528
+      ],
+      "webhookId": "3246a4b7-9399-4f50-84f7-b4dc56f592dc"
+    },
+    {
+      "parameters": {
+        "amount": 72,
+        "unit": "hours"
+      },
+      "id": "4ed91404-5a03-4189-8c24-e4b2e03f421e",
+      "name": "Wait 3 Days",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -2176,
+        528
+      ],
+      "webhookId": "60b90dd5-a665-4fb6-9f71-b67038d31a1f"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "contactId": "={{ $('New Customer Trigger').item.json.objectId }}",
+        "additionalFields": {}
+      },
+      "id": "b8c0d7bd-58bb-4a4c-a4b5-a6c16767034d",
+      "name": "Check Still Active",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        -1952,
+        528
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "still-active",
+              "leftValue": "={{ $json.properties?.lifecyclestage?.value }}",
+              "rightValue": "customer",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "14093a3b-3a98-45b3-92fe-2ccd7abf4b85",
+      "name": "Still Active?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1728,
+        528
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  COUNT(CASE WHEN profile_complete THEN 1 END) as profile_done,\n  COUNT(CASE WHEN first_import_done THEN 1 END) as import_done,\n  COUNT(CASE WHEN first_integration_done THEN 1 END) as integration_done,\n  COUNT(CASE WHEN first_report_done THEN 1 END) as report_done\nFROM onboarding_progress\nWHERE contact_id = '{{ $('New Customer Trigger').item.json.objectId }}';",
+        "options": {}
+      },
+      "id": "8fb8f4e6-370b-446c-947c-c1099304ed1d",
+      "name": "Check Milestones",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -1504,
+        528
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const m = $json;\nconst milestones_completed = [m.profile_done, m.import_done, m.integration_done, m.report_done].filter(Boolean).length;\nconst on_track = milestones_completed >= 2;\nconst contact = $('Get Contact Details').item.json.properties;\nreturn {\n  json: {\n    on_track,\n    milestones_completed,\n    total_milestones: 4,\n    contact_email: contact.email?.value,\n    contact_firstname: contact.firstname?.value || 'there',\n    contact_id: $('New Customer Trigger').item.json.objectId,\n    deal_value: parseFloat(contact.dealvalue?.value || 0)\n  }\n};\n"
+      },
+      "id": "406ff4df-0f2a-47b3-8e54-5996b8ab3e15",
+      "name": "Evaluate Progress",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1280,
+        528
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "ontrack-check",
+              "leftValue": "={{ $json.on_track }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "ee640102-447d-47dd-b713-79072d50b794",
+      "name": "On Track?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1056,
+        528
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.contact_email }}",
+        "subject": "You're crushing it, {{ $json.contact_firstname }}! 🚀",
+        "emailType": "text",
+        "message": "=Hi {{ $json.contact_firstname }},\n\nI just checked in and you've already completed {{ $json.milestones_completed }} out of {{ $json.total_milestones }} onboarding steps — that's fantastic progress!\n\nYou're well on your way to getting the most out of the platform. If you have any questions as you continue exploring, just reply here.\n\nKeep it up!\nThe Team",
+        "options": {}
+      },
+      "id": "89988198-fcfc-4c63-b3e8-c9bc1455a849",
+      "name": "Celebration Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        -832,
+        432
+      ],
+      "webhookId": "e6bf8d30-ed8a-451f-a8bf-0c81558ef0cb"
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.contact_email }}",
+        "subject": "Let's get you set up, {{ $json.contact_firstname }}",
+        "emailType": "text",
+        "message": "=Hi {{ $json.contact_firstname }},\n\nI noticed you haven't had a chance to complete your onboarding setup yet — totally understandable, things get busy!\n\nYou're currently at {{ $json.milestones_completed }} of {{ $json.total_milestones }} steps. Here's your quickest next step:\n\nLog in and complete your profile — it only takes 2 minutes and unlocks personalised recommendations.\n\nIf you're running into any issues, just reply to this email and I'll help you directly.\n\nBest,\nThe Team",
+        "options": {}
+      },
+      "id": "41b5c9dd-b11b-4d9c-bd3f-6a1f80a1c634",
+      "name": "Nudge Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        -832,
+        624
+      ],
+      "webhookId": "e4990919-3303-4ff7-a1e9-8a936c9c8e39"
+    },
+    {
+      "parameters": {
+        "operation": "update"
+      },
+      "id": "443d2c66-3b65-41d8-8793-42ffa4ab068a",
+      "name": "Update CRM Status",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        -608,
+        528
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "vip-check",
+              "leftValue": "={{ $json.deal_value }}",
+              "rightValue": 5000,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "d2d9d1e2-8bc4-4b55-831e-71e77c0fb9b5",
+      "name": "VIP Account?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -384,
+        528
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "value": "#cs-onboarding",
+          "__rl": true,
+          "mode": "name"
+        },
+        "text": "⭐ *VIP Onboarding Alert — Day 3 Check*\n\n*Customer:* {{ $json.contact_firstname }}\n*Deal Value:* £{{ $json.deal_value }}\n*Progress:* {{ $json.milestones_completed }}/{{ $json.total_milestones }} milestones\n*Status:* {{ $json.on_track ? '✅ On Track' : '⚠️ Behind — needs attention' }}\n\nPlease reach out personally if they are behind.",
+        "otherOptions": {
+          "mrkdwn": true
+        }
+      },
+      "id": "d9d9d5da-a263-42fd-ba6e-e3dca0803667",
+      "name": "CS VIP Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        -160,
+        528
+      ],
+      "webhookId": "16ac7e4a-cf5e-4820-95c6-b17c59b9e38e"
+    },
+    {
+      "parameters": {
+        "content": "## 20 — Customer Onboarding Orchestrator\n\n**HubSpot custom properties to create:**\n- onboarding_status (text)\n- milestones_completed (number)\n- onboarding_day3_checked (boolean)\n\n**PostgreSQL table: onboarding_progress**\nColumns: contact_id, profile_complete (bool), first_import_done (bool), first_integration_done (bool), first_report_done (bool)\n\n**Env variables:** PRODUCT_NAME\n\n**Extend the journey:** Copy the Wait → Check Milestones → Email section and set to 168hrs (Day 7) and 336hrs (Day 14) for the full onboarding arc.",
+        "height": 932,
+        "width": 3300
+      },
+      "id": "12097d98-b529-44cd-841e-5e761a538c8a",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -3200,
+        16
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "New Customer Trigger": {
+      "main": [
+        [
+          {
+            "node": "Is New Customer?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is New Customer?": {
+      "main": [
+        [
+          {
+            "node": "Get Contact Details",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Contact Details": {
+      "main": [
+        [
+          {
+            "node": "Day 0 Welcome Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Day 0 Welcome Email": {
+      "main": [
+        [
+          {
+            "node": "Wait 3 Days",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 3 Days": {
+      "main": [
+        [
+          {
+            "node": "Check Still Active",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Still Active": {
+      "main": [
+        [
+          {
+            "node": "Still Active?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Still Active?": {
+      "main": [
+        [
+          {
+            "node": "Check Milestones",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Milestones": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Progress",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Progress": {
+      "main": [
+        [
+          {
+            "node": "On Track?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "On Track?": {
+      "main": [
+        [
+          {
+            "node": "Celebration Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Nudge Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Celebration Email": {
+      "main": [
+        [
+          {
+            "node": "Update CRM Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Nudge Email": {
+      "main": [
+        [
+          {
+            "node": "Update CRM Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update CRM Status": {
+      "main": [
+        [
+          {
+            "node": "VIP Account?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "VIP Account?": {
+      "main": [
+        [
+          {
+            "node": "CS VIP Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "185d5294-ae37-4892-b763-55666f3905c5",
+  "meta": {
+    "instanceId": "a68e86bb011358047357560db41b5697f3f34c05caa0129e8b53eebd8d3a6168"
+  },
+  "id": "609wre2r7TDp9MrL",
+  "tags": [
+    {
+      "name": "CRM",
+      "id": "NxhBfn0F7UAZJC6y",
+      "updatedAt": "2026-04-28T19:01:16.094Z",
+      "createdAt": "2026-04-28T19:01:16.094Z"
+    },
+    {
+      "name": "Analytics",
+      "id": "SR2sQOwfJRF7LorP",
+      "updatedAt": "2026-04-28T19:11:31.537Z",
+      "createdAt": "2026-04-28T19:11:31.537Z"
+    }
+  ]
+}

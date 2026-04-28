@@ -1,0 +1,251 @@
+{
+  "name": "04 - Customer Health Score Engine",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 7 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "b07c0fc5-e068-4ff8-bbc0-b36e8d28a216",
+      "name": "Daily Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1120,
+        464
+      ],
+      "notes": "Fires every weekday at 7:00 AM. Adjust timezone in Settings."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  account_id,\n  customer_name,\n  hubspot_company_id,\n  COALESCE(logins_30d, 0) AS logins_30d,\n  COALESCE(features_used, 0) AS features_used,\n  COALESCE(support_tickets, 0) AS support_tickets,\n  last_active_date\nFROM user_activity_summary\nWHERE last_active_date >= NOW() - INTERVAL '30 days'\nORDER BY account_id;",
+        "options": {}
+      },
+      "id": "5847c888-cc0b-4761-8136-b1378bc58803",
+      "name": "Pull Usage Data",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -896,
+        464
+      ],
+      "notes": "Replace the credential ID with your PostgreSQL connection. Update table/column names to match your schema."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Customer Health Score Calculator ──────────────────────────────\n// Weights: Logins 40% | Feature Adoption 35% | Support Tickets 25% (inverse)\n// Score range: 0-100. Higher = healthier account.\n\nconst accounts = $input.all();\n\nconst scored = accounts.map(item => {\n  const d = item.json;\n\n  // Normalise each metric to a 0-1 scale\n  const loginScore  = Math.min(d.logins_30d / 20, 1) * 40;   // 20+ logins = full points\n  const featureScore = Math.min(d.features_used / 10, 1) * 35; // 10+ features = full points\n  const ticketPenalty = Math.min(d.support_tickets * 5, 25);   // Each ticket = -5 pts, max -25\n\n  const raw = loginScore + featureScore - ticketPenalty;\n  const health_score = Math.round(Math.max(0, Math.min(100, raw)));\n\n  // Risk classification\n  let risk_level, grade;\n  if (health_score >= 80)      { risk_level = 'safe';  grade = 'A'; }\n  else if (health_score >= 60) { risk_level = 'stable'; grade = 'B'; }\n  else if (health_score >= 40) { risk_level = 'watch';  grade = 'C'; }\n  else                         { risk_level = 'high';   grade = 'D'; }\n\n  return {\n    json: {\n      account_id:          d.account_id,\n      customer_name:       d.customer_name,\n      hubspot_company_id:  d.hubspot_company_id,\n      health_score,\n      risk_level,\n      grade,\n      scored_at:           new Date().toISOString(),\n      // Raw metrics for transparency\n      logins_30d:          d.logins_30d,\n      features_used:       d.features_used,\n      support_tickets:     d.support_tickets\n    }\n  };\n});\n\nreturn scored;\n"
+      },
+      "id": "878d8ca1-81ef-4e1d-9004-e9d0a36fc94d",
+      "name": "Calculate Health Scores",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -672,
+        464
+      ],
+      "notes": "Tune the weights and thresholds here. Consider pulling weight values from environment variables for easy adjustment without editing the workflow."
+    },
+    {
+      "parameters": {
+        "resource": "company",
+        "operation": "update",
+        "companyId": "={{ $json.hubspot_company_id }}",
+        "updateFields": {
+          "customPropertiesUi": {
+            "customPropertiesValues": [
+              {
+                "property": "health_score",
+                "value": "={{ $json.health_score }}"
+              },
+              {
+                "property": "risk_level",
+                "value": "={{ $json.risk_level }}"
+              },
+              {
+                "property": "last_scored_at",
+                "value": "={{ $json.scored_at }}"
+              }
+            ]
+          }
+        }
+      },
+      "id": "c752529b-6e3f-4746-a8aa-875eff0236ea",
+      "name": "Update HubSpot Company",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        -448,
+        464
+      ],
+      "notes": "Create these 3 custom properties in HubSpot first: health_score (number), risk_level (single-line text), last_scored_at (date). Replace credential ID."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "churn-risk-condition",
+              "leftValue": "={{ $json.health_score }}",
+              "rightValue": 40,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "f5f63706-2e9d-4f0f-8409-0be62f64c4ba",
+      "name": "At-Risk Check",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -224,
+        464
+      ],
+      "notes": "Adjust the threshold (currently 40) to match your definition of 'at-risk'. True branch = send alert. False branch = no action."
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "value": "#cs-alerts",
+          "__rl": true,
+          "mode": "name"
+        },
+        "text": "🚨 *Churn Risk Alert*\n\n*Account:* {{ $json.customer_name }}\n*Health Score:* {{ $json.health_score }}/100\n*Risk Level:* {{ $json.risk_level | upcase }}\n*Grade:* {{ $json.grade }}\n\n*Breakdown:*\n• Logins (30d): {{ $json.logins_30d }}\n• Features Used: {{ $json.features_used }}\n• Support Tickets: {{ $json.support_tickets }}\n\n*Scored at:* {{ $json.scored_at }}\n\nPlease review and action within 24 hours.",
+        "otherOptions": {
+          "mrkdwn": true
+        }
+      },
+      "id": "d93d8af5-eb68-4910-9392-c35afaf4bd80",
+      "name": "Churn Risk Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        0,
+        448
+      ],
+      "webhookId": "7fdf78c8-3287-47ba-97de-2d7937cb0580",
+      "notes": "Update the channel name to match your Slack workspace. Replace credential ID."
+    },
+    {
+      "parameters": {
+        "content": "## 04 — Customer Health Score Engine\n\n**What this workflow does:**\nRuns every weekday at 7am. Pulls 30-day product usage data from PostgreSQL, calculates a weighted health score (0-100) per customer account, updates the score on HubSpot Company records, and fires Slack alerts for any account scoring below 40.\n\n**Before you use this:**\n1. Update the PostgreSQL query to match your table/column names\n2. Create 3 custom properties in HubSpot: `health_score`, `risk_level`, `last_scored_at`\n3. Update all credential IDs\n4. Adjust scoring weights in the Code node to match your business model\n\n**Scoring formula:**\n- Logins (40%) + Feature Adoption (35%) - Support Tickets (25%) = Health Score 0-100",
+        "height": 600,
+        "width": 1368
+      },
+      "id": "ee6eaf69-91db-4d41-931f-bf867ba19f89",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1168,
+        128
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Daily Trigger": {
+      "main": [
+        [
+          {
+            "node": "Pull Usage Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pull Usage Data": {
+      "main": [
+        [
+          {
+            "node": "Calculate Health Scores",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Health Scores": {
+      "main": [
+        [
+          {
+            "node": "Update HubSpot Company",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update HubSpot Company": {
+      "main": [
+        [
+          {
+            "node": "At-Risk Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "At-Risk Check": {
+      "main": [
+        [
+          {
+            "node": "Churn Risk Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "8856e3b0-6d9b-4444-b8cf-b03c2e0627b0",
+  "meta": {
+    "instanceId": "a68e86bb011358047357560db41b5697f3f34c05caa0129e8b53eebd8d3a6168"
+  },
+  "id": "O85rqKfw09PliLEw",
+  "tags": [
+    {
+      "name": "CRM",
+      "id": "NxhBfn0F7UAZJC6y",
+      "updatedAt": "2026-04-28T19:01:16.094Z",
+      "createdAt": "2026-04-28T19:01:16.094Z"
+    },
+    {
+      "name": "Analytics",
+      "id": "SR2sQOwfJRF7LorP",
+      "updatedAt": "2026-04-28T19:11:31.537Z",
+      "createdAt": "2026-04-28T19:11:31.537Z"
+    },
+    {
+      "name": "Portfolio",
+      "id": "Zqi33NoBhd4JZsP1",
+      "updatedAt": "2026-04-28T19:15:14.982Z",
+      "createdAt": "2026-04-28T19:15:14.982Z"
+    }
+  ]
+}

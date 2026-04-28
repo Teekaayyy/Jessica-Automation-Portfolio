@@ -1,0 +1,369 @@
+{
+  "name": "17 - Contract Renewal Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "30 8 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "2e893d83-3230-44ef-8066-efd15901d994",
+      "name": "Daily 8:30am Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -432,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "deal",
+        "operation": "getAll",
+        "filters": {}
+      },
+      "id": "7a3299c8-b39b-4059-87c4-ad969a71c555",
+      "name": "Query Expiring Contracts",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        -208,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const now = new Date();\nconst deals = $input.all().map(i => i.json);\n\nconst expiring = deals\n  .filter(d => d.properties?.contract_end_date)\n  .map(d => {\n    const endDate = new Date(d.properties.contract_end_date);\n    const daysLeft = Math.ceil((endDate - now) / (1000 * 60 * 60 * 24));\n    \n    let tier = null;\n    let already_sent_key = null;\n    if (daysLeft >= 28 && daysLeft <= 32) { tier = '30d'; already_sent_key = 'renewal_email_30d_sent'; }\n    else if (daysLeft >= 58 && daysLeft <= 62) { tier = '60d'; already_sent_key = 'renewal_email_60d_sent'; }\n    else if (daysLeft >= 88 && daysLeft <= 92) { tier = '90d'; already_sent_key = 'renewal_email_90d_sent'; }\n    \n    if (!tier) return null;\n    \n    const already_sent = d.properties?.[already_sent_key] === 'true';\n    if (already_sent) return null;\n    \n    return {\n      deal_id: d.id,\n      deal_name: d.properties.dealname || 'Unknown Deal',\n      amount: d.properties.amount || '0',\n      contract_end_date: d.properties.contract_end_date,\n      days_left: daysLeft,\n      tier,\n      already_sent_key,\n      owner_id: d.properties.hubspot_owner_id || ''\n    };\n  })\n  .filter(Boolean);\n\nreturn expiring.map(d => ({ json: d }));\n"
+      },
+      "id": "e9885176-0bc5-4e90-813f-c0ede16b6383",
+      "name": "Segment by Tier",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        16,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.tier }}",
+                    "rightValue": "30d",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "urgent"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.tier }}",
+                    "rightValue": "60d",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "proposal"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.tier }}",
+                    "rightValue": "90d",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "early"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "858e2047-0563-47de-96bd-c3de22af373e",
+      "name": "Route by Tier",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        240,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $env.RENEWAL_TEST_EMAIL || 'renewals@company.com' }}",
+        "subject": "=⚠️ Action Needed — {{ $json.deal_name }} contract expires in {{ $json.days_left }} days",
+        "emailType": "text",
+        "message": "=Hi,\n\nThis is an urgent reminder that the contract for {{ $json.deal_name }} expires in {{ $json.days_left }} days ({{ $json.contract_end_date }}).\n\nContract value: £{{ $json.amount }}\n\nPlease take immediate action to initiate the renewal process. Let me know if you'd like to discuss the terms.\n\nBest regards,\nAccount Management",
+        "options": {}
+      },
+      "id": "4691470c-3d78-453c-ad96-b54219085583",
+      "name": "30-Day Urgent Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        464,
+        -64
+      ],
+      "webhookId": "45c1d817-1681-49eb-9e2f-d792e88b9040"
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $env.RENEWAL_TEST_EMAIL || 'renewals@company.com' }}",
+        "subject": "=Renewal proposal for {{ $json.deal_name }} — 60 days to go",
+        "emailType": "text",
+        "message": "=Hi,\n\nI wanted to reach out as the contract for {{ $json.deal_name }} is coming up for renewal in {{ $json.days_left }} days.\n\nI'd love to put together a renewal proposal that works for you. Could we schedule a 30-minute call this week to discuss your needs going forward?\n\nContract value: £{{ $json.amount }} | Expiry: {{ $json.contract_end_date }}\n\nLooking forward to continuing our partnership.\n\nBest,\nAccount Management",
+        "options": {}
+      },
+      "id": "7a73aff1-0af2-4443-9c7f-5195d73da745",
+      "name": "60-Day Proposal Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        464,
+        128
+      ],
+      "webhookId": "16a08bb9-37a0-4814-8759-10f28429c863"
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $env.RENEWAL_TEST_EMAIL || 'renewals@company.com' }}",
+        "subject": "=Planning ahead — {{ $json.deal_name }} contract renewal",
+        "emailType": "text",
+        "message": "=Hi,\n\nI hope everything is going well. I'm writing to give you advance notice that your contract for {{ $json.deal_name }} is coming up for renewal in approximately 90 days ({{ $json.contract_end_date }}).\n\nThis early heads-up gives us plenty of time to review your needs and ensure continuity without any disruption.\n\nNo action needed right now — I'll be in touch closer to the date with renewal options. Feel free to reach out in the meantime.\n\nBest regards,\nAccount Management",
+        "options": {}
+      },
+      "id": "fc1f672c-f2d6-4a06-b1ff-ae098adfc494",
+      "name": "90-Day Reminder Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        464,
+        320
+      ],
+      "webhookId": "3d312e35-2152-456d-8b6e-b8ec1b50fcb2"
+    },
+    {
+      "parameters": {
+        "resource": "deal",
+        "operation": "update",
+        "dealId": "={{ $json.deal_id }}",
+        "updateFields": {
+          "customPropertiesUi": {
+            "customPropertiesValues": [
+              {
+                "property": "={{ $json.already_sent_key }}",
+                "value": "true"
+              }
+            ]
+          }
+        }
+      },
+      "id": "4c5a8b7a-5f44-45bb-9b9a-e525dc1d0075",
+      "name": "Mark Email Sent",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        688,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "note"
+      },
+      "id": "a7bcfc1b-32a1-4778-851a-6a89471d77ac",
+      "name": "Log to HubSpot",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        912,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 17 — Contract Renewal Pipeline\n\n**HubSpot setup required:**\n1. Custom deal property: contract_end_date (date)\n2. Custom deal properties (boolean): renewal_email_90d_sent, renewal_email_60d_sent, renewal_email_30d_sent\n\n**Email routing:** Currently sends to RENEWAL_TEST_EMAIL env variable. Update each Gmail node's 'Send To' field to use the actual contact email from the associated HubSpot contact.\n\n**To get contact email:** Add a HubSpot 'Get Contact' node between 'Route by Tier' and the Gmail nodes, using the deal's associated contact ID.",
+        "height": 708,
+        "width": 1716
+      },
+      "id": "163294cd-b2dc-4a4f-92ab-e63802dddf2e",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -570,
+        -228
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Daily 8:30am Trigger": {
+      "main": [
+        [
+          {
+            "node": "Query Expiring Contracts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Expiring Contracts": {
+      "main": [
+        [
+          {
+            "node": "Segment by Tier",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Segment by Tier": {
+      "main": [
+        [
+          {
+            "node": "Route by Tier",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Tier": {
+      "main": [
+        [
+          {
+            "node": "30-Day Urgent Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "60-Day Proposal Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "90-Day Reminder Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "30-Day Urgent Email": {
+      "main": [
+        [
+          {
+            "node": "Mark Email Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "60-Day Proposal Email": {
+      "main": [
+        [
+          {
+            "node": "Mark Email Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "90-Day Reminder Email": {
+      "main": [
+        [
+          {
+            "node": "Mark Email Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Email Sent": {
+      "main": [
+        [
+          {
+            "node": "Log to HubSpot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "c2b0bbaa-f518-4c69-8544-bd009313ddaa",
+  "meta": {
+    "instanceId": "a68e86bb011358047357560db41b5697f3f34c05caa0129e8b53eebd8d3a6168"
+  },
+  "id": "Ll4vsLKZiojVg79l",
+  "tags": [
+    {
+      "name": "CRM",
+      "id": "NxhBfn0F7UAZJC6y",
+      "updatedAt": "2026-04-28T19:01:16.094Z",
+      "createdAt": "2026-04-28T19:01:16.094Z"
+    }
+  ]
+}

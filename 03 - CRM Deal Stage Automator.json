@@ -1,0 +1,371 @@
+{
+  "name": "03 - CRM Deal Stage Automator",
+  "nodes": [
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "e8f161c7-a0dd-4f63-b61e-b96599b53091",
+      "name": "Sales Inbox Trigger",
+      "type": "n8n-nodes-base.emailReadImap",
+      "typeVersion": 2,
+      "position": [
+        -1264,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "value": "gpt-4o-mini",
+          "__rl": true,
+          "mode": "id"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are an email intent classifier for a sales team. Classify the email into EXACTLY one of these labels:\n- DEMO_REQUEST: prospect wants to see the product\n- PRICING_INQUIRY: asking about cost or plans\n- READY_TO_BUY: clear buying intent, wants to proceed\n- OBJECTION: raising concerns, hesitation, or friction\n- UNSUBSCRIBE: wants to stop communication\n- OTHER: anything that doesn't fit the above\n\nRespond with ONLY the label and a confidence score as JSON: {\"intent\": \"LABEL\", \"confidence\": 0.0-1.0, \"reasoning\": \"one sentence\"}",
+              "role": "system"
+            },
+            {
+              "content": "=Subject: {{ $json.subject }}\n\nBody: {{ $json.text?.substring(0, 2000) || $json.html?.replace(/<[^>]*>/g,'').substring(0, 2000) }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.1
+        }
+      },
+      "id": "fb343538-d9c8-4560-bf20-b98612359992",
+      "name": "Classify Intent",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        -1040,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const parsed = JSON.parse($json.message.content);\nconst fromEmail = $('Sales Inbox Trigger').item.json.from?.text?.match(/[\\w.-]+@[\\w.-]+\\.[a-z]+/)?.[0] || '';\nreturn { json: { intent: parsed.intent, confidence: parsed.confidence, reasoning: parsed.reasoning, from_email: fromEmail } };"
+      },
+      "id": "3b66ea80-4a11-4fcd-921b-1f0e425ab126",
+      "name": "Parse Classification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -688,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "confidence-check",
+              "leftValue": "={{ $json.confidence }}",
+              "rightValue": 0.7,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c11639d7-5e61-4fff-b547-0df67e2d9b13",
+      "name": "High Confidence?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -464,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "DEMO_REQUEST",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "demo"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "READY_TO_BUY",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "buy"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "PRICING_INQUIRY",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "pricing"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "OBJECTION",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "objection"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "994a43ea-ecb7-46a0-8790-36c05108b8e7",
+      "name": "Route by Intent",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        -240,
+        144
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "deal",
+        "operation": "update",
+        "dealId": "={{ $json.deal_id }}",
+        "updateFields": {}
+      },
+      "id": "d49e9508-ee8a-4cb3-bcba-46335310baf8",
+      "name": "Update Stage: Demo",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        -16,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "deal",
+        "operation": "update",
+        "dealId": "={{ $json.deal_id }}",
+        "updateFields": {}
+      },
+      "id": "9e63e8a5-38f9-409b-a60b-a67fdb23335b",
+      "name": "Update Stage: Buy",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        -16,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "value": "#needs-review",
+          "__rl": true,
+          "mode": "name"
+        },
+        "text": "⚠️ *Low confidence classification — needs human review*\n\n*From:* {{ $json.from_email }}\n*Classified as:* {{ $json.intent }} ({{ ($json.confidence * 100).toFixed(0) }}%)\n*Reasoning:* {{ $json.reasoning }}",
+        "otherOptions": {
+          "mrkdwn": true
+        }
+      },
+      "id": "c04a0f5e-0c20-4705-a9e5-7294c0fa9508",
+      "name": "Flag for Review",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        -240,
+        400
+      ],
+      "webhookId": "5c426b52-82a6-4672-b159-353d9833799b"
+    },
+    {
+      "parameters": {
+        "content": "## 03 — CRM Deal Stage Automator\n\n**Setup:**\n1. Configure IMAP credentials with your sales inbox\n2. Replace HubSpot stage IDs (get them from HubSpot Settings > CRM > Deals > Pipelines)\n3. Add a step to look up deal_id by contact email before the Route node\n4. Replace all credential IDs\n\n**Note:** You'll need a HubSpot lookup node between 'Parse Classification' and 'Route by Intent' to find the deal_id from the sender's email address.",
+        "height": 800,
+        "width": 1684
+      },
+      "id": "94f1b995-1834-43fc-aecc-ef3aed8066ad",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1360,
+        -144
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Sales Inbox Trigger": {
+      "main": [
+        [
+          {
+            "node": "Classify Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Intent": {
+      "main": [
+        [
+          {
+            "node": "Parse Classification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Classification": {
+      "main": [
+        [
+          {
+            "node": "High Confidence?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "High Confidence?": {
+      "main": [
+        [
+          {
+            "node": "Route by Intent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Flag for Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Intent": {
+      "main": [
+        [
+          {
+            "node": "Update Stage: Demo",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Update Stage: Buy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "2cfb869a-e9f9-4485-95e1-d5a61ad4c07d",
+  "meta": {
+    "instanceId": "a68e86bb011358047357560db41b5697f3f34c05caa0129e8b53eebd8d3a6168"
+  },
+  "id": "pG6YdqjEv8X2JhXt",
+  "tags": [
+    {
+      "name": "CRM",
+      "id": "NxhBfn0F7UAZJC6y",
+      "updatedAt": "2026-04-28T19:01:16.094Z",
+      "createdAt": "2026-04-28T19:01:16.094Z"
+    },
+    {
+      "name": "AI",
+      "id": "xrgwRm56lrif7yln",
+      "updatedAt": "2026-04-28T19:11:31.586Z",
+      "createdAt": "2026-04-28T19:11:31.586Z"
+    }
+  ]
+}

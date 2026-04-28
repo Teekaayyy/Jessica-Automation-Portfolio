@@ -1,0 +1,209 @@
+{
+  "name": "08 - Meeting Notes → CRM Sync",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "meeting-transcript",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "5c62caf9-0307-4e20-abd6-1d83b3542c2b",
+      "name": "Transcript Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        224,
+        0
+      ],
+      "webhookId": "9500b36c-8d86-4ec2-b085-8517a1613dd2"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\"status\":\"received\",\"message\":\"Transcript is being processed and will be logged to HubSpot.\"}",
+        "options": {}
+      },
+      "id": "b9b54ac0-75e4-4752-b082-92685e9f3b5e",
+      "name": "Immediate Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        512,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "value": "gpt-4o",
+          "__rl": true,
+          "mode": "id"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are an expert at extracting structured intelligence from sales call and meeting transcripts. Be precise and literal — only extract what was explicitly said, never invent or infer beyond what is stated.\n\nReturn ONLY valid JSON with this exact structure:\n{\n  \"contact_name\": \"string or null\",\n  \"contact_email\": \"string or null\",\n  \"contact_company\": \"string or null\",\n  \"meeting_type\": \"discovery|demo|follow-up|negotiation|onboarding|other\",\n  \"summary\": \"2-3 sentence executive summary\",\n  \"action_items\": [\"action 1\", \"action 2\"],\n  \"rep_commitments\": [\"what the rep committed to\"],\n  \"prospect_commitments\": [\"what the prospect committed to\"],\n  \"pain_points\": [\"stated pain point\"],\n  \"objections\": [\"stated objection\"],\n  \"buying_signals\": [\"positive signal\"],\n  \"next_steps\": [\"specific next step with owner if mentioned\"],\n  \"deal_stage_signal\": \"early|exploring|evaluating|ready|stalled|dead\",\n  \"follow_up_required\": true|false,\n  \"follow_up_date\": \"ISO date string or null\"\n}",
+              "role": "system"
+            },
+            {
+              "content": "=Meeting Date: {{ $json.body.meeting_date }}\nRep: {{ $json.body.rep_email }}\nDeal ID: {{ $json.body.deal_id }}\n\nTranscript:\n{{ $json.body.transcript_text?.substring(0, 12000) }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.2
+        }
+      },
+      "id": "5e9766c7-ad37-418a-ac3b-76b7f74005db",
+      "name": "AI Extract Intelligence",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        448,
+        -96
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const extracted = JSON.parse($json.message.content);\nconst meta = $('Transcript Webhook').item.json.body;\n\nconst noteBody = [\n  `📋 MEETING INTELLIGENCE — ${meta.meeting_date}`,\n  '='.repeat(50),\n  '',\n  `Type: ${extracted.meeting_type?.toUpperCase() || 'UNKNOWN'}`,\n  `Deal Stage Signal: ${extracted.deal_stage_signal?.toUpperCase() || 'UNKNOWN'}`,\n  `Follow-up Required: ${extracted.follow_up_required ? '✅ YES' : '❌ NO'}`,\n  extracted.follow_up_date ? `Follow-up Date: ${extracted.follow_up_date}` : '',\n  '',\n  '📝 SUMMARY',\n  extracted.summary || 'No summary extracted.',\n  '',\n  '✅ ACTION ITEMS',\n  ...(extracted.action_items || []).map(a => `• ${a}`),\n  '',\n  '🎯 BUYING SIGNALS',\n  ...(extracted.buying_signals || []).map(b => `• ${b}`),\n  '',\n  '⚠️ OBJECTIONS',\n  ...(extracted.objections || []).map(o => `• ${o}`),\n  '',\n  '🔥 PAIN POINTS',\n  ...(extracted.pain_points || []).map(p => `• ${p}`),\n  '',\n  '➡️ NEXT STEPS',\n  ...(extracted.next_steps || []).map(s => `• ${s}`),\n].filter(l => l !== undefined).join('\\n');\n\nreturn { json: { ...extracted, note_body: noteBody, deal_id: meta.deal_id, rep_email: meta.rep_email } };\n"
+      },
+      "id": "d03160ce-56d8-443c-ab7b-7d1ba29c3f24",
+      "name": "Format CRM Note",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        -96
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "note"
+      },
+      "id": "67d2b8a3-f2f6-4765-af77-f8de57aec719",
+      "name": "Create HubSpot Note",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        1024,
+        -96
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "value": "#sales-activity",
+          "__rl": true,
+          "mode": "name"
+        },
+        "text": "📋 *Meeting logged to HubSpot*\n\n*Rep:* {{ $('Format CRM Note').item.json.rep_email }}\n*Type:* {{ $('Format CRM Note').item.json.meeting_type }}\n*Stage Signal:* {{ $('Format CRM Note').item.json.deal_stage_signal }}\n*Follow-up:* {{ $('Format CRM Note').item.json.follow_up_required ? 'Required — ' + ($('Format CRM Note').item.json.follow_up_date || 'date TBD') : 'Not required' }}\n\n*Next Steps:*\n{{ ($('Format CRM Note').item.json.next_steps || []).slice(0,3).map(s => `• ${s}`).join('\\n') }}",
+        "otherOptions": {
+          "mrkdwn": true
+        }
+      },
+      "id": "f67a12b5-4d1c-4492-9585-65e0f2987f7d",
+      "name": "Rep Slack Summary",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1248,
+        -96
+      ],
+      "webhookId": "13d3f795-264c-490c-9be6-ff11ef1be4aa"
+    },
+    {
+      "parameters": {
+        "content": "## 08 — Meeting Notes → CRM Sync\n\n**Webhook payload:**\n```json\n{\n  \"transcript_text\": \"Full meeting transcript here...\",\n  \"meeting_date\": \"2024-01-15\",\n  \"rep_email\": \"rep@company.com\",\n  \"deal_id\": \"12345678\"\n}\n```\n\n**Integrations:** Connect Otter.ai, Fireflies.ai, or Zoom to post transcripts to this webhook automatically after each call ends.\n\n**Transcript limit:** First 12,000 characters are processed — covers most 60-90 min calls.",
+        "height": 640,
+        "width": 1328
+      },
+      "id": "52d09c5c-5a17-4015-b2d5-3d090b9f29bb",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        120,
+        -384
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Transcript Webhook": {
+      "main": [
+        [
+          {
+            "node": "AI Extract Intelligence",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Immediate Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Extract Intelligence": {
+      "main": [
+        [
+          {
+            "node": "Format CRM Note",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format CRM Note": {
+      "main": [
+        [
+          {
+            "node": "Create HubSpot Note",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create HubSpot Note": {
+      "main": [
+        [
+          {
+            "node": "Rep Slack Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "42fe8831-86b8-4c19-86f1-e7fa6864bba2",
+  "meta": {
+    "instanceId": "a68e86bb011358047357560db41b5697f3f34c05caa0129e8b53eebd8d3a6168"
+  },
+  "id": "4bWBJMV52fqpeGH1",
+  "tags": [
+    {
+      "name": "CRM",
+      "id": "NxhBfn0F7UAZJC6y",
+      "updatedAt": "2026-04-28T19:01:16.094Z",
+      "createdAt": "2026-04-28T19:01:16.094Z"
+    },
+    {
+      "name": "AI",
+      "id": "xrgwRm56lrif7yln",
+      "updatedAt": "2026-04-28T19:11:31.586Z",
+      "createdAt": "2026-04-28T19:11:31.586Z"
+    }
+  ]
+}

@@ -1,0 +1,389 @@
+{
+  "name": "18 - Real-time Dashboard Updater",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/15 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "cef6b707-7e36-4244-acd3-3881eb57df57",
+      "name": "15-Minute Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -464,
+        16
+      ],
+      "notes": "Fires every 15 minutes. Change to '*/5 * * * *' for 5-minute intervals (higher API costs) or '0 * * * *' for hourly (lower costs)."
+    },
+    {
+      "parameters": {
+        "url": "https://api.hubapi.com/crm/v3/objects/deals",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "limit",
+              "value": "100"
+            },
+            {
+              "name": "properties",
+              "value": "dealname,amount,dealstage,closedate,pipeline"
+            },
+            {
+              "name": "filterGroups[0][filters][0][propertyName]",
+              "value": "dealstage"
+            },
+            {
+              "name": "filterGroups[0][filters][0][operator]",
+              "value": "NEQ"
+            },
+            {
+              "name": "filterGroups[0][filters][0][value]",
+              "value": "closedwon"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "46e8aca0-8a17-4ac2-a534-fbe2883b586a",
+      "name": "Pull HubSpot Pipeline",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -240,
+        16
+      ],
+      "notes": "Fetches all open deals from HubSpot. Update the filter to match your pipeline stages."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://analyticsdata.googleapis.com/v1beta/properties/REPLACE_GA4_PROPERTY_ID:runReport",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\n  \"dimensions\": [{\"name\": \"date\"}],\n  \"metrics\": [\n    {\"name\": \"sessions\"},\n    {\"name\": \"conversions\"},\n    {\"name\": \"bounceRate\"},\n    {\"name\": \"newUsers\"}\n  ],\n  \"dateRanges\": [{\"startDate\": \"today\", \"endDate\": \"today\"}]\n}",
+        "options": {}
+      },
+      "id": "0b458e89-623a-4f50-bb1c-b68e8717473e",
+      "name": "Pull GA4 Metrics",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -240,
+        208
+      ],
+      "notes": "Replace REPLACE_GA4_PROPERTY_ID with your actual GA4 property ID. Use a Google service account for production auth."
+    },
+    {
+      "parameters": {
+        "url": "https://api.stripe.com/v1/charges",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "limit",
+              "value": "100"
+            },
+            {
+              "name": "created[gte]",
+              "value": "={{ Math.floor(new Date().setHours(0,0,0,0)/1000) }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "ec1d69a5-41eb-4a89-b548-a504fcffcadd",
+      "name": "Pull Revenue Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -240,
+        400
+      ],
+      "notes": "Replace with your preferred revenue source (Stripe, Shopify, Chargebee). This pulls today's charges from Stripe."
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "options": {}
+      },
+      "id": "aa332f9a-7c17-4eec-bc62-45267bab1bb8",
+      "name": "Merge All Sources",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        -16,
+        208
+      ],
+      "notes": "Combines all three API responses into one items array. Uses combineAll mode so all data is available downstream."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Dashboard Metrics Aggregator ─────────────────────────────────\n// Processes data from 3 sources: HubSpot, GA4, Stripe\n// Returns a single clean metrics object for the dashboard\n\nconst items = $input.all();\nconst now = new Date();\nconst errors = [];\n\n// ── 1. Extract HubSpot Pipeline Metrics ─────────────────────────\nlet open_deals = 0, pipeline_value = 0;\ntry {\n  const hubspotData = items.find(i => i.json.results);\n  if (hubspotData) {\n    const deals = hubspotData.json.results || [];\n    open_deals = deals.length;\n    pipeline_value = deals.reduce((sum, d) => sum + parseFloat(d.properties?.amount || 0), 0);\n  }\n} catch (e) { errors.push({ source: 'hubspot', error: e.message }); }\n\n// ── 2. Extract GA4 Metrics ───────────────────────────────────────\nlet sessions = 0, conversions = 0, bounce_rate = 0, new_users = 0;\ntry {\n  const ga4Data = items.find(i => i.json.rows);\n  if (ga4Data && ga4Data.json.rows?.length > 0) {\n    const row = ga4Data.json.rows[0].metricValues;\n    sessions     = parseInt(row[0]?.value || 0);\n    conversions  = parseInt(row[1]?.value || 0);\n    bounce_rate  = parseFloat(row[2]?.value || 0).toFixed(2);\n    new_users    = parseInt(row[3]?.value || 0);\n  }\n} catch (e) { errors.push({ source: 'ga4', error: e.message }); }\n\n// ── 3. Extract Revenue Metrics ───────────────────────────────────\nlet revenue_today = 0, transactions_today = 0;\ntry {\n  const revenueData = items.find(i => i.json.data && Array.isArray(i.json.data));\n  if (revenueData) {\n    const charges = revenueData.json.data.filter(c => c.paid && !c.refunded);\n    transactions_today = charges.length;\n    revenue_today = charges.reduce((sum, c) => sum + (c.amount / 100), 0);\n  }\n} catch (e) { errors.push({ source: 'stripe', error: e.message }); }\n\nreturn [{\n  json: {\n    // Timestamp\n    last_updated:       now.toISOString(),\n    last_updated_human: now.toLocaleString('en-GB', { timeZone: 'Europe/London' }),\n    // HubSpot\n    open_deals,\n    pipeline_value:     pipeline_value.toFixed(2),\n    // GA4\n    sessions_today:     sessions,\n    conversions_today:  conversions,\n    bounce_rate_pct:    bounce_rate,\n    new_users_today:    new_users,\n    // Revenue\n    revenue_today:      revenue_today.toFixed(2),\n    transactions_today,\n    // Health\n    source_errors:      errors,\n    has_errors:         errors.length > 0\n  }\n}];\n"
+      },
+      "id": "d423181c-dcab-41c0-8a0d-1b116881b55f",
+      "name": "Aggregate Metrics",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        208,
+        208
+      ],
+      "notes": "Edit the field extraction logic here to match your actual API response structures. Each source may return data differently."
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "value": "REPLACE_WITH_YOUR_GOOGLE_SHEET_ID",
+          "__rl": true,
+          "mode": "id"
+        },
+        "sheetName": {
+          "value": "Dashboard Data",
+          "__rl": true,
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "last_updated": "={{ $json.last_updated_human }}",
+            "open_deals": "={{ $json.open_deals }}",
+            "pipeline_value": "={{ $json.pipeline_value }}",
+            "sessions_today": "={{ $json.sessions_today }}",
+            "conversions_today": "={{ $json.conversions_today }}",
+            "bounce_rate_pct": "={{ $json.bounce_rate_pct }}",
+            "new_users_today": "={{ $json.new_users_today }}",
+            "revenue_today": "={{ $json.revenue_today }}",
+            "transactions_today": "={{ $json.transactions_today }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "8bbbe0a5-ad7d-4f7e-ad82-33c7edf0cd27",
+      "name": "Update Dashboard Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        432,
+        208
+      ],
+      "notes": "Replace the Sheet ID. Create a sheet named 'Dashboard Data' with a row where row_id='LIVE'. Connect Looker Studio to this sheet."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "error-check",
+              "leftValue": "={{ $json.has_errors }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "98519bb8-d368-40c9-aaf8-12e40bc89d1e",
+      "name": "Data Quality Check",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        656,
+        208
+      ],
+      "notes": "Only fires a Slack alert if one or more data sources returned an error. Normal runs complete silently."
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "value": "#data-alerts",
+          "__rl": true,
+          "mode": "name"
+        },
+        "text": "⚠️ *Dashboard Data Quality Alert*\n\n*Failed Sources:*\n{{ $json.source_errors.map(e => `• ${e.source}: ${e.error}`).join('\\n') }}\n\n*Successful metrics still updated at:* {{ $json.last_updated_human }}\n\n_Dashboard may show stale data for affected sources. Please investigate._",
+        "otherOptions": {
+          "mrkdwn": true
+        }
+      },
+      "id": "ed06c022-f225-4224-9748-edd1803dc5ce",
+      "name": "Data Quality Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        880,
+        192
+      ],
+      "webhookId": "bb6ce3d7-21a5-4453-a0cd-797015d68cf5"
+    },
+    {
+      "parameters": {
+        "content": "## 18 — Real-time Dashboard Updater\n\n**What this workflow does:**\nEvery 15 minutes: pulls data from HubSpot + GA4 + Stripe in parallel, aggregates into a single object, updates a Google Sheet, and alerts Slack if any source fails.\n\n**Before you use this:**\n1. Replace REPLACE_GA4_PROPERTY_ID with your actual GA4 property ID\n2. Replace all credential IDs\n3. Replace REPLACE_WITH_YOUR_GOOGLE_SHEET_ID with your Sheet ID\n4. Create a 'Dashboard Data' sheet with these columns: last_updated, open_deals, pipeline_value, sessions_today, conversions_today, bounce_rate_pct, new_users_today, revenue_today, transactions_today\n5. Add a row with row_id='LIVE' — this is the row that gets updated each run\n6. Connect Looker Studio or Metabase to this Google Sheet\n\n**Swap out Stripe** for Shopify, Chargebee, or any revenue API by replacing the Pull Revenue Data node.",
+        "height": 996,
+        "width": 1632
+      },
+      "id": "505fd848-e168-4b93-a9ba-a2dd98839866",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        -436
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "15-Minute Schedule": {
+      "main": [
+        [
+          {
+            "node": "Pull HubSpot Pipeline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pull HubSpot Pipeline": {
+      "main": [
+        [
+          {
+            "node": "Merge All Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pull GA4 Metrics": {
+      "main": [
+        [
+          {
+            "node": "Merge All Sources",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge All Sources": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Metrics": {
+      "main": [
+        [
+          {
+            "node": "Update Dashboard Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Dashboard Sheet": {
+      "main": [
+        [
+          {
+            "node": "Data Quality Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Data Quality Check": {
+      "main": [
+        [
+          {
+            "node": "Data Quality Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pull Revenue Data": {
+      "main": [
+        [
+          {
+            "node": "Merge All Sources",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "c3e96b8a-1acc-415a-bd26-07720b01e50d",
+  "meta": {
+    "instanceId": "a68e86bb011358047357560db41b5697f3f34c05caa0129e8b53eebd8d3a6168"
+  },
+  "id": "dmKXj6p25UkCJvKk",
+  "tags": [
+    {
+      "name": "Data Engineering",
+      "id": "R8jMwaFGoceXGjbq",
+      "updatedAt": "2026-04-28T19:35:32.904Z",
+      "createdAt": "2026-04-28T19:35:32.904Z"
+    },
+    {
+      "name": "Analytics",
+      "id": "SR2sQOwfJRF7LorP",
+      "updatedAt": "2026-04-28T19:11:31.537Z",
+      "createdAt": "2026-04-28T19:11:31.537Z"
+    },
+    {
+      "name": "Portfolio",
+      "id": "Zqi33NoBhd4JZsP1",
+      "updatedAt": "2026-04-28T19:15:14.982Z",
+      "createdAt": "2026-04-28T19:15:14.982Z"
+    }
+  ]
+}

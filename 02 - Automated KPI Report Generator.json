@@ -1,0 +1,222 @@
+{
+  "name": "02 - Automated KPI Report Generator",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * 1"
+            }
+          ]
+        }
+      },
+      "id": "8d49cc84-164b-4f07-944b-f81e2d5f5cf1",
+      "name": "Monday 9am Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -16,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "getRows",
+        "documentId": {
+          "value": "REPLACE_WITH_SHEET_ID",
+          "__rl": true,
+          "mode": "id"
+        }
+      },
+      "id": "385d22d8-d4bb-48c7-b076-a13dae6a9d8d",
+      "name": "Pull KPI Data",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        208,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Calculate WoW changes for each KPI metric\nconst rows = $input.all().map(i => i.json);\nif (rows.length < 2) return [{ json: { error: 'Not enough data rows', rows: rows.length } }];\n\n// Sort by date descending\nrows.sort((a, b) => new Date(b.date) - new Date(a.date));\n\nconst thisWeek = rows[0];\nconst lastWeek = rows[1] || {};\n\nconst metrics = Object.keys(thisWeek).filter(k => k !== 'date' && !isNaN(Number(thisWeek[k])));\n\nconst changes = metrics.map(metric => {\n  const current = Number(thisWeek[metric]) || 0;\n  const previous = Number(lastWeek[metric]) || 0;\n  const change_pct = previous !== 0 ? (((current - previous) / previous) * 100).toFixed(1) : 'N/A';\n  const trend = current >= previous ? '📈' : '📉';\n  return { metric, current, previous, change_pct, trend };\n});\n\nreturn [{ json: { week_ending: thisWeek.date, changes, raw: thisWeek } }];\n"
+      },
+      "id": "e636232b-8e45-4eba-8a05-c0d1aa6dc1bf",
+      "name": "Calculate WoW Changes",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        432,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "value": "gpt-4o",
+          "__rl": true,
+          "mode": "id"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are a senior business analyst writing a crisp executive KPI report. Your reports are data-driven, highlight what matters, and recommend clear actions. Write in plain English — no bullet lists for the narrative, use prose paragraphs. Be direct and specific.",
+              "role": "system"
+            },
+            {
+              "content": "=Write a 3-paragraph executive KPI summary for the week ending {{ $json.week_ending }}.\n\nMetrics and changes:\n{{ JSON.stringify($json.changes, null, 2) }}\n\nParagraph 1: Overall performance headline — what does this week's data tell us?\nParagraph 2: What's improving and why does it matter? What's declining and what's the likely cause?\nParagraph 3: 2–3 specific recommended actions for next week based on the data.\n\nEnd with a one-line summary of the week in bold."
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.4
+        }
+      },
+      "id": "9db80bcd-1056-4702-b150-be15d24a9430",
+      "name": "Generate AI Narrative",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        656,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $env.REPORT_RECIPIENTS }}",
+        "subject": "=Weekly KPI Report — Week Ending {{ $('Calculate WoW Changes').item.json.week_ending }}",
+        "message": "=<html><body style=\"font-family: Arial, sans-serif; max-width: 680px; margin: 0 auto; color: #333;\">\n<h2 style=\"color: #f97316;\">📊 Weekly KPI Report</h2>\n<p style=\"color: #888;\">Week ending: {{ $('Calculate WoW Changes').item.json.week_ending }}</p>\n<hr/>\n<div style=\"line-height: 1.7; font-size: 15px;\">{{ $json.message.content }}</div>\n<hr/>\n<h3>Metric Summary</h3>\n<table style=\"width:100%; border-collapse: collapse;\">\n<tr style=\"background:#f5f5f5;\"><th style=\"padding:10px; text-align:left;\">Metric</th><th>This Week</th><th>Last Week</th><th>Change</th></tr>\n{{ $('Calculate WoW Changes').item.json.changes.map(m => `<tr><td style=\"padding:8px;\">${m.metric}</td><td style=\"text-align:center;\">${m.current}</td><td style=\"text-align:center; color:#888;\">${m.previous}</td><td style=\"text-align:center;\">${m.trend} ${m.change_pct}%</td></tr>`).join('') }}\n</table>\n</body></html>",
+        "options": {}
+      },
+      "id": "108c053d-789c-4242-a8c3-54aa6fef6383",
+      "name": "Send Email Report",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1008,
+        192
+      ],
+      "webhookId": "c5e87c16-a4cf-4216-a37e-a22aef8956fa"
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "value": "#reports",
+          "__rl": true,
+          "mode": "name"
+        },
+        "text": "✅ Weekly KPI report sent to stakeholders — week ending {{ $('Calculate WoW Changes').item.json.week_ending }}",
+        "otherOptions": {}
+      },
+      "id": "ac9c7dbd-8f77-45c9-890d-9f4b918af3e7",
+      "name": "Send Slack Confirmation",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1232,
+        192
+      ],
+      "webhookId": "675782e0-0321-48e1-8cb1-56c0ac328ea2"
+    },
+    {
+      "parameters": {
+        "content": "## 02 — Automated KPI Report Generator\n\n**Setup:**\n1. Replace REPLACE_WITH_SHEET_ID with your Google Sheet ID\n2. Name your sheet tab 'Weekly KPIs' with a 'date' column + metric columns\n3. Set REPORT_RECIPIENTS env variable (comma-separated emails)\n4. Replace all credential IDs\n\n**Sheet structure:** date | metric1 | metric2 | metric3 ...\nEach row = one week of data",
+        "height": 636,
+        "width": 1532
+      },
+      "id": "bd017bb0-1532-4ace-84a1-0975e38f3200",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -80,
+        -128
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Monday 9am Trigger": {
+      "main": [
+        [
+          {
+            "node": "Pull KPI Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pull KPI Data": {
+      "main": [
+        [
+          {
+            "node": "Calculate WoW Changes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate WoW Changes": {
+      "main": [
+        [
+          {
+            "node": "Generate AI Narrative",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate AI Narrative": {
+      "main": [
+        [
+          {
+            "node": "Send Email Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Email Report": {
+      "main": [
+        [
+          {
+            "node": "Send Slack Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "332ca4f8-3777-4fc3-a67e-4e3ade5caa68",
+  "meta": {
+    "instanceId": "a68e86bb011358047357560db41b5697f3f34c05caa0129e8b53eebd8d3a6168"
+  },
+  "id": "Y3ff4L0VEXIP2cXI",
+  "tags": [
+    {
+      "name": "Analytics",
+      "id": "SR2sQOwfJRF7LorP",
+      "updatedAt": "2026-04-28T19:11:31.537Z",
+      "createdAt": "2026-04-28T19:11:31.537Z"
+    },
+    {
+      "name": "AI",
+      "id": "xrgwRm56lrif7yln",
+      "updatedAt": "2026-04-28T19:11:31.586Z",
+      "createdAt": "2026-04-28T19:11:31.586Z"
+    }
+  ]
+}

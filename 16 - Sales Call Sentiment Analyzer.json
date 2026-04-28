@@ -1,0 +1,340 @@
+{
+  "name": "16 - Sales Call Sentiment Analyzer",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "sales-call-analysis",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "169e92ae-35ac-42de-888c-cd4bfffc925b",
+      "name": "Recording Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -112,
+        400
+      ],
+      "webhookId": "sales-call-analysis",
+      "notes": "POST your call recording data here. Required fields: recording_url, rep_email, deal_id, call_duration_mins. Optional: rep_slack_id, contact_name."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.assemblyai.com/v2/transcript",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $env.ASSEMBLYAI_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "audio_url",
+              "value": "={{ $json.body.recording_url }}"
+            },
+            {
+              "name": "speaker_labels",
+              "value": "true"
+            },
+            {
+              "name": "sentiment_analysis",
+              "value": "true"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "e6bc7412-9627-49a3-a2f7-11a579fc7ed8",
+      "name": "Submit to AssemblyAI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        112,
+        304
+      ],
+      "notes": "Set ASSEMBLYAI_API_KEY as an n8n environment variable. speaker_labels=true gives you per-speaker sentiment and talk ratio."
+    },
+    {
+      "parameters": {
+        "amount": 3,
+        "unit": "minutes"
+      },
+      "id": "abb782cc-a0f9-4b8a-8324-03a24be303db",
+      "name": "Wait 3 Minutes",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        336,
+        304
+      ],
+      "webhookId": "66f6b286-c14d-4699-a587-c16e892da7d6",
+      "notes": "Typical transcription takes 1-3 minutes for a 30-60 min call. Increase for longer calls or add polling logic."
+    },
+    {
+      "parameters": {
+        "url": "=https://api.assemblyai.com/v2/transcript/{{ $('Submit to AssemblyAI').item.json.id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $env.ASSEMBLYAI_API_KEY }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fe6f72ca-983c-4c08-a9c2-fc626f5c3dc6",
+      "name": "Fetch Transcript",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        560,
+        304
+      ],
+      "notes": "Polls AssemblyAI for the completed transcript. For production, add an IF node to check status='completed' and loop back if still processing."
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "value": "gpt-4o",
+          "__rl": true,
+          "mode": "id"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are an expert sales coach analysing a recorded sales call transcript. Provide a detailed, actionable analysis.\n\nReturn ONLY a valid JSON object with this exact structure:\n{\n  \"overall_sentiment\": \"positive|neutral|negative\",\n  \"rep_sentiment\": \"positive|neutral|negative\",\n  \"prospect_sentiment\": \"positive|neutral|negative\",\n  \"prospect_engagement_level\": \"high|medium|low\",\n  \"rep_talk_ratio_pct\": <number 0-100>,\n  \"call_quality_score\": <number 1-10>,\n  \"buying_signals\": [<array of strings>],\n  \"objections_raised\": [<array of strings>],\n  \"pain_points_mentioned\": [<array of strings>],\n  \"next_steps_agreed\": [<array of strings>],\n  \"rep_strengths\": [<array of strings>],\n  \"coaching_points\": [<array of strings>],\n  \"executive_summary\": \"<2-3 sentence summary>\",\n  \"recommended_action\": \"<specific next action for the rep>\"\n}",
+              "role": "system"
+            },
+            {
+              "content": "=Analyse this sales call transcript:\n\n{{ $json.text }}\n\nCall metadata:\n- Duration: {{ $('Recording Webhook').item.json.body.call_duration_mins }} minutes\n- Rep: {{ $('Recording Webhook').item.json.body.rep_email }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "id": "b6b51045-ca77-4715-8680-f8b818b59cee",
+      "name": "AI Call Analysis",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        784,
+        304
+      ],
+      "notes": "Uses GPT-4o with JSON mode enabled. The system prompt enforces structured output for reliable parsing."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Parse OpenAI JSON response and build HubSpot note body\nconst analysis = JSON.parse($json.message.content);\nconst callMeta = $('Recording Webhook').item.json.body;\n\nconst scoreEmoji = analysis.call_quality_score >= 8 ? '🟢' : analysis.call_quality_score >= 6 ? '🟡' : '🔴';\n\nconst noteBody = `SALES CALL ANALYSIS\\n${'='.repeat(50)}\\n\\n` +\n  `Score: ${scoreEmoji} ${analysis.call_quality_score}/10\\n` +\n  `Overall Sentiment: ${analysis.overall_sentiment}\\n` +\n  `Prospect Engagement: ${analysis.prospect_engagement_level}\\n` +\n  `Rep Talk Ratio: ${analysis.rep_talk_ratio_pct}%\\n\\n` +\n  `EXECUTIVE SUMMARY\\n${analysis.executive_summary}\\n\\n` +\n  `BUYING SIGNALS\\n${analysis.buying_signals.map(s => `• ${s}`).join('\\n')}\\n\\n` +\n  `OBJECTIONS RAISED\\n${analysis.objections_raised.map(o => `• ${o}`).join('\\n')}\\n\\n` +\n  `NEXT STEPS AGREED\\n${analysis.next_steps_agreed.map(s => `• ${s}`).join('\\n')}\\n\\n` +\n  `RECOMMENDED ACTION\\n${analysis.recommended_action}\\n\\n` +\n  `COACHING NOTES\\n${analysis.coaching_points.map(c => `• ${c}`).join('\\n')}`;\n\nreturn {\n  json: {\n    deal_id: callMeta.deal_id,\n    rep_email: callMeta.rep_email,\n    rep_slack_id: callMeta.rep_slack_id || null,\n    note_body: noteBody,\n    analysis,\n    score_emoji: scoreEmoji,\n    call_duration: callMeta.call_duration_mins\n  }\n};\n"
+      },
+      "id": "6d31f0f1-c9ac-49ee-82ad-6f2c941478b4",
+      "name": "Format Analysis",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1136,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "deal",
+        "operation": "createNote"
+      },
+      "id": "6e2c0d4a-3ab4-4256-9b8c-fd8850cb0ba6",
+      "name": "Log to HubSpot",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        304
+      ],
+      "notes": "Logs the full analysis as a call note on the HubSpot deal. Ensure deal_id from the webhook matches a valid HubSpot deal ID."
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "value": "#call-reviews",
+          "__rl": true,
+          "mode": "name"
+        },
+        "text": "{{ $json.score_emoji }} *Call Analysis: {{ $json.analysis.call_quality_score }}/10*\n\n*Rep:* {{ $json.rep_email }}\n*Duration:* {{ $json.call_duration }} mins\n*Prospect Engagement:* {{ $json.analysis.prospect_engagement_level }}\n*Talk Ratio:* Rep {{ $json.analysis.rep_talk_ratio_pct }}% | Prospect {{ 100 - $json.analysis.rep_talk_ratio_pct }}%\n\n*Key Buying Signals:*\n{{ $json.analysis.buying_signals.slice(0,3).map(s => `• ${s}`).join('\\n') }}\n\n*Main Objections:*\n{{ $json.analysis.objections_raised.slice(0,3).map(o => `• ${o}`).join('\\n') }}\n\n*Recommended Action:*\n_{{ $json.analysis.recommended_action }}_\n\n_Full analysis logged to HubSpot_",
+        "otherOptions": {
+          "mrkdwn": true
+        }
+      },
+      "id": "b374b849-d59c-49b2-b828-1178ee6bb1a4",
+      "name": "Post to Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1584,
+        304
+      ],
+      "webhookId": "41b5456b-2192-4f97-afea-0436be4b308c",
+      "notes": "Route to #coaching-queue instead of #call-reviews for calls scoring below 6."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"status\": \"processing\", \"message\": \"Call analysis started. Results will be logged to HubSpot.\" }",
+        "options": {}
+      },
+      "id": "81f04177-dd1e-448b-9163-e17480457029",
+      "name": "Webhook Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        112,
+        496
+      ],
+      "notes": "Returns immediately so the calling system doesn't time out waiting."
+    },
+    {
+      "parameters": {
+        "content": "## 16 — Sales Call Sentiment Analyzer\n\n**What this workflow does:**\nReceives a call recording URL → transcribes with AssemblyAI → deep AI analysis via GPT-4o → logs structured intelligence to HubSpot → posts summary to Slack.\n\n**Before you use this:**\n1. Set ASSEMBLYAI_API_KEY as an n8n env variable\n2. Update all credential IDs\n3. Update deal_id field mapping to match your HubSpot setup\n4. Adjust Slack channel names\n\n**Test by sending this payload to the webhook URL:**\n```json\n{\n  \"recording_url\": \"https://example.com/call.mp3\",\n  \"rep_email\": \"rep@company.com\",\n  \"deal_id\": \"12345\",\n  \"call_duration_mins\": 30\n}\n```",
+        "height": 892,
+        "width": 2060
+      },
+      "id": "44f790fd-9d42-4594-96a9-0d0ab57e718b",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -246,
+        -236
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Recording Webhook": {
+      "main": [
+        [
+          {
+            "node": "Submit to AssemblyAI",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Webhook Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Submit to AssemblyAI": {
+      "main": [
+        [
+          {
+            "node": "Wait 3 Minutes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 3 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Fetch Transcript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Transcript": {
+      "main": [
+        [
+          {
+            "node": "AI Call Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Call Analysis": {
+      "main": [
+        [
+          {
+            "node": "Format Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Analysis": {
+      "main": [
+        [
+          {
+            "node": "Log to HubSpot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log to HubSpot": {
+      "main": [
+        [
+          {
+            "node": "Post to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "3f4d016e-8f5a-403c-9198-ecf96aa6ebca",
+  "meta": {
+    "instanceId": "a68e86bb011358047357560db41b5697f3f34c05caa0129e8b53eebd8d3a6168"
+  },
+  "id": "4XZ3Fmg3lc2IPIvO",
+  "tags": [
+    {
+      "name": "CRM",
+      "id": "NxhBfn0F7UAZJC6y",
+      "updatedAt": "2026-04-28T19:01:16.094Z",
+      "createdAt": "2026-04-28T19:01:16.094Z"
+    },
+    {
+      "name": "AI",
+      "id": "xrgwRm56lrif7yln",
+      "updatedAt": "2026-04-28T19:11:31.586Z",
+      "createdAt": "2026-04-28T19:11:31.586Z"
+    },
+    {
+      "name": "Portfolio",
+      "id": "Zqi33NoBhd4JZsP1",
+      "updatedAt": "2026-04-28T19:15:14.982Z",
+      "createdAt": "2026-04-28T19:15:14.982Z"
+    }
+  ]
+}

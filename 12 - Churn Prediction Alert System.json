@@ -1,0 +1,282 @@
+{
+  "name": "12 - Churn Prediction Alert System",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 23 * * 0"
+            }
+          ]
+        }
+      },
+      "id": "3bdcb4a8-95f8-4891-8ac4-e52dbc05d076",
+      "name": "Sunday Night Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1200,
+        304
+      ],
+      "notes": "Fires every Sunday at 11 PM. Results are ready Monday morning for the CS team."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  a.account_id,\n  a.customer_name,\n  a.cs_rep_email,\n  a.cs_rep_slack_id,\n  a.hubspot_company_id,\n  a.primary_contact_email,\n  a.primary_contact_firstname,\n  a.subscription_tier,\n  COALESCE(COUNT(l.login_event), 0)           AS logins_90d,\n  COALESCE(COUNT(DISTINCT l.feature_name), 0) AS features_90d,\n  MAX(l.event_date)                            AS last_login,\n  COALESCE(COUNT(t.ticket_id), 0)             AS tickets_90d,\n  a.subscription_status\nFROM accounts a\nLEFT JOIN login_events l\n  ON l.account_id = a.account_id\n  AND l.event_date >= NOW() - INTERVAL '90 days'\nLEFT JOIN support_tickets t\n  ON t.account_id = a.account_id\n  AND t.created_at >= NOW() - INTERVAL '90 days'\nWHERE a.subscription_status = 'active'\nGROUP BY\n  a.account_id, a.customer_name, a.cs_rep_email,\n  a.cs_rep_slack_id, a.hubspot_company_id,\n  a.primary_contact_email, a.primary_contact_firstname,\n  a.subscription_tier, a.subscription_status;",
+        "options": {}
+      },
+      "id": "b88ec50d-9126-41d4-9117-76a4dd8f822d",
+      "name": "Pull 90-Day Usage",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -976,
+        304
+      ],
+      "notes": "Update table names to match your schema. The query joins accounts with login events and support tickets for the 90-day window."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Churn Probability Scorer ──────────────────────────────────────\n// Weights: Login Frequency 30% | Feature Breadth 25% | Recency 25% | Ticket Volume 20%\n// Output: churn_score 0-100 (higher = more likely to churn)\n\nconst accounts = $input.all();\nconst now = new Date();\n\nconst scored = accounts.map(item => {\n  const d = item.json;\n\n  // ── 1. Login Frequency Score (30 pts max, inverse) ──────────────\n  // 20+ logins in 90 days = healthy (0 churn pts), 0 logins = max churn pts\n  const loginChurn = (1 - Math.min(d.logins_90d / 20, 1)) * 30;\n\n  // ── 2. Feature Breadth Score (25 pts max, inverse) ─────────────\n  // 8+ distinct features used = engaged (0 churn pts)\n  const featureChurn = (1 - Math.min(d.features_90d / 8, 1)) * 25;\n\n  // ── 3. Recency Score (25 pts max, inverse) ─────────────────────\n  // Last login within 7 days = very active (0 pts)\n  // No login in 90 days = 25 churn pts\n  let recencyChurn = 25;\n  if (d.last_login) {\n    const daysSince = Math.floor((now - new Date(d.last_login)) / (1000 * 60 * 60 * 24));\n    recencyChurn = Math.min(daysSince / 90, 1) * 25;\n  }\n\n  // ── 4. Support Ticket Volume (20 pts max) ──────────────────────\n  // 3+ tickets in 90 days = high friction (max 20 churn pts)\n  const ticketChurn = Math.min(d.tickets_90d / 3, 1) * 20;\n\n  const raw_score = loginChurn + featureChurn + recencyChurn + ticketChurn;\n  const churn_score = Math.round(Math.max(0, Math.min(100, raw_score)));\n\n  let churn_risk_level, intervention_type;\n  if (churn_score >= 80)      { churn_risk_level = 'critical';  intervention_type = 'executive_call'; }\n  else if (churn_score >= 60) { churn_risk_level = 'high';      intervention_type = 'personal_email'; }\n  else if (churn_score >= 40) { churn_risk_level = 'medium';    intervention_type = 'automated_sequence'; }\n  else                        { churn_risk_level = 'low';       intervention_type = 'none'; }\n\n  return {\n    json: {\n      ...d,\n      churn_score,\n      churn_risk_level,\n      intervention_type,\n      churn_scored_at: now.toISOString()\n    }\n  };\n});\n\n// Sort by churn score descending for Slack summary\nreturn scored.sort((a, b) => b.json.churn_score - a.json.churn_score);\n"
+      },
+      "id": "f4e50a86-6675-4e13-9d97-93413f607806",
+      "name": "Calculate Churn Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -752,
+        304
+      ],
+      "notes": "Calibrate these weights and thresholds using historical data from accounts that actually churned. The current values are reasonable defaults."
+    },
+    {
+      "parameters": {
+        "resource": "company",
+        "operation": "update",
+        "companyId": "={{ $json.hubspot_company_id }}",
+        "updateFields": {
+          "customPropertiesUi": {
+            "customPropertiesValues": [
+              {
+                "property": "churn_score",
+                "value": "={{ $json.churn_score }}"
+              },
+              {
+                "property": "churn_risk_level",
+                "value": "={{ $json.churn_risk_level }}"
+              },
+              {
+                "property": "churn_scored_at",
+                "value": "={{ $json.churn_scored_at }}"
+              }
+            ]
+          }
+        }
+      },
+      "id": "e98bc7d5-e402-4d6c-b0e2-bc2121a7dad6",
+      "name": "Update HubSpot Risk",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        -528,
+        304
+      ],
+      "notes": "Create custom properties in HubSpot first: churn_score (number), churn_risk_level (text), churn_scored_at (date)."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "high-risk-condition",
+              "leftValue": "={{ $json.churn_score }}",
+              "rightValue": 60,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "39274949-363c-4de1-aca8-ab246f5699b1",
+      "name": "High Risk Filter",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -304,
+        304
+      ],
+      "notes": "Routes accounts scoring above 60 to the intervention track. Adjust threshold to tune sensitivity."
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "value": "#cs-churn-alerts",
+          "__rl": true,
+          "mode": "name"
+        },
+        "text": "🔴 *Churn Risk Alert — {{ $json.churn_risk_level | upcase }}*\n\n*Account:* {{ $json.customer_name }}\n*Churn Score:* {{ $json.churn_score }}/100\n*Risk Level:* {{ $json.churn_risk_level }}\n*Intervention:* {{ $json.intervention_type }}\n\n*90-Day Activity:*\n• Logins: {{ $json.logins_90d }}\n• Features Used: {{ $json.features_90d }}\n• Support Tickets: {{ $json.tickets_90d }}\n\n*CS Rep:* {{ $json.cs_rep_email }}\n*Tier:* {{ $json.subscription_tier }}\n\n_Scored {{ $json.churn_scored_at }}_",
+        "otherOptions": {
+          "mrkdwn": true
+        }
+      },
+      "id": "c661c256-1508-4db2-8a89-bb12948225f7",
+      "name": "CS Slack Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        -64,
+        288
+      ],
+      "webhookId": "0e0eba1a-80ac-43d3-aefa-6ff2e686a9e0"
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.primary_contact_email }}",
+        "subject": "Quick check-in, {{ $json.primary_contact_firstname }}",
+        "emailType": "text",
+        "message": "Hi {{ $json.primary_contact_firstname }},\n\nI wanted to reach out personally — I noticed you haven't been as active on the platform lately, and I'd love to make sure you're getting everything you need.\n\nWould you have 15 minutes this week for a quick call? I'd love to hear what's on your mind and make sure we're set up to help you hit your goals.\n\nJust reply to this email and we can find a time that works.\n\nLooking forward to chatting!\n\n{{ $json.cs_rep_email }}",
+        "options": {
+          "replyTo": "={{ $json.cs_rep_email }}"
+        }
+      },
+      "id": "3e084043-2bc6-4818-84ab-de5d93a34901",
+      "name": "Personal Re-engagement Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        144,
+        288
+      ],
+      "webhookId": "7a4008f9-cd65-4953-a5d7-489fadb804e6",
+      "notes": "This sends for churn_score > 60. For critical accounts (score > 80), consider adding a separate branch that also creates a HubSpot task for the CS rep."
+    },
+    {
+      "parameters": {
+        "content": "## 12 — Churn Prediction Alert System\n\n**What this workflow does:**\nEvery Sunday night, analyses 90-day usage data, calculates churn probability per account, updates HubSpot, alerts the CS team on Slack, and sends a personal re-engagement email for high-risk accounts.\n\n**Before you use this:**\n1. Update table names in the PostgreSQL query\n2. Create custom HubSpot properties: `churn_score`, `churn_risk_level`, `churn_scored_at`\n3. Update all credential IDs\n4. Calibrate scoring weights using your historical churn data\n\n**Churn Score Formula:**\n- Login Frequency (30%) + Feature Breadth (25%) + Recency (25%) + Ticket Volume (20%)\n- Score range: 0-100 (higher = more likely to churn)",
+        "height": 676,
+        "width": 1704
+      },
+      "id": "40672c50-91bb-4a69-95c9-1e5a4ef3d75b",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1312,
+        -48
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Sunday Night Trigger": {
+      "main": [
+        [
+          {
+            "node": "Pull 90-Day Usage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pull 90-Day Usage": {
+      "main": [
+        [
+          {
+            "node": "Calculate Churn Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Churn Score": {
+      "main": [
+        [
+          {
+            "node": "Update HubSpot Risk",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update HubSpot Risk": {
+      "main": [
+        [
+          {
+            "node": "High Risk Filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "High Risk Filter": {
+      "main": [
+        [
+          {
+            "node": "CS Slack Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CS Slack Alert": {
+      "main": [
+        [
+          {
+            "node": "Personal Re-engagement Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "011221a9-4e91-46ed-9999-5103bd72a457",
+  "meta": {
+    "instanceId": "a68e86bb011358047357560db41b5697f3f34c05caa0129e8b53eebd8d3a6168"
+  },
+  "id": "X8uXNTolVZzMEhZp",
+  "tags": [
+    {
+      "name": "CRM",
+      "id": "NxhBfn0F7UAZJC6y",
+      "updatedAt": "2026-04-28T19:01:16.094Z",
+      "createdAt": "2026-04-28T19:01:16.094Z"
+    },
+    {
+      "name": "Analytics",
+      "id": "SR2sQOwfJRF7LorP",
+      "updatedAt": "2026-04-28T19:11:31.537Z",
+      "createdAt": "2026-04-28T19:11:31.537Z"
+    },
+    {
+      "name": "Portfolio",
+      "id": "Zqi33NoBhd4JZsP1",
+      "updatedAt": "2026-04-28T19:15:14.982Z",
+      "createdAt": "2026-04-28T19:15:14.982Z"
+    }
+  ]
+}

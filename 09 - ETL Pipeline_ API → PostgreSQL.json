@@ -1,0 +1,299 @@
+{
+  "name": "09 - ETL Pipeline: API → PostgreSQL",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 2 * * *"
+            }
+          ]
+        }
+      },
+      "id": "63d00d1e-e026-4f3b-a72e-8dcc152677fd",
+      "name": "ETL Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1136,
+        336
+      ],
+      "notes": "Runs at 2:00 AM daily. Change to '0 * * * *' for hourly. Off-peak timing reduces API rate limit risk."
+    },
+    {
+      "parameters": {
+        "url": "https://api.example.com/v1/records",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "limit",
+              "value": "100"
+            },
+            {
+              "name": "offset",
+              "value": "0"
+            },
+            {
+              "name": "updated_since",
+              "value": "={{ $now.minus(1, 'day').toISO() }}"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "7952512a-875b-43e8-ac78-56c8da5e7ff4",
+      "name": "Extract from API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -912,
+        336
+      ],
+      "notes": "Replace the URL with your actual data source API. Update query parameters to match that API's pagination. Add a Loop node above if dataset exceeds 100 records."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── ETL Transform: Normalise, Clean, Validate ─────────────────────\n// This node standardises field names, converts types,\n// handles nulls, deduplicates, and adds metadata.\n\nconst rawRecords = $input.all();\nconst errors = [];\nconst transformed = [];\n\n// Helper: safe string normalisation\nconst safe = (val, fallback = '') => (val !== null && val !== undefined) ? String(val).trim() : fallback;\nconst safeNum = (val, fallback = 0) => isNaN(Number(val)) ? fallback : Number(val);\nconst safeDate = (val) => { try { return new Date(val).toISOString(); } catch { return null; } };\n\n// Track seen IDs for deduplication\nconst seen = new Set();\n\nfor (const item of rawRecords) {\n  // Handle both array responses and nested data\n  const records = Array.isArray(item.json) ? item.json : (item.json.data || item.json.records || [item.json]);\n\n  for (const r of records) {\n    try {\n      // Skip duplicates within this batch\n      if (seen.has(r.id)) continue;\n      seen.add(r.id);\n\n      // ── Map to your DB schema ──────────────────────────────────────\n      // EDIT THESE FIELD MAPPINGS to match your source API and DB columns\n      transformed.push({\n        json: {\n          external_id:   safe(r.id),\n          name:          safe(r.name || r.title),\n          email:         safe(r.email || r.contact_email),\n          company:       safe(r.company || r.organisation),\n          status:        safe(r.status, 'unknown'),\n          amount:        safeNum(r.amount || r.value),\n          created_at:    safeDate(r.created_at || r.createdAt),\n          updated_at:    safeDate(r.updated_at || r.updatedAt),\n          ingested_at:   new Date().toISOString(),\n          source:        'api_etl_pipeline'\n        }\n      });\n    } catch (err) {\n      errors.push({ id: r.id || 'unknown', error: err.message });\n    }\n  }\n}\n\n// Attach error summary to first item for downstream checking\nif (transformed.length > 0) {\n  transformed[0].json._meta = {\n    total_transformed: transformed.length,\n    error_count: errors.length,\n    errors: errors\n  };\n}\n\nreturn transformed;\n"
+      },
+      "id": "f794261e-d382-4f5e-a154-1a09accde8d8",
+      "name": "Transform Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -688,
+        336
+      ],
+      "notes": "IMPORTANT: Edit the field mappings in this node to match your source API fields and your PostgreSQL table columns."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO your_table_name (\n  external_id, name, email, company, status,\n  amount, created_at, updated_at, ingested_at, source\n)\nVALUES (\n  '{{ $json.external_id }}',\n  '{{ $json.name }}',\n  '{{ $json.email }}',\n  '{{ $json.company }}',\n  '{{ $json.status }}',\n  {{ $json.amount }},\n  {{ $json.created_at ? `'${$json.created_at}'` : 'NULL' }},\n  {{ $json.updated_at ? `'${$json.updated_at}'` : 'NULL' }},\n  '{{ $json.ingested_at }}',\n  '{{ $json.source }}'\n)\nON CONFLICT (external_id)\nDO UPDATE SET\n  name        = EXCLUDED.name,\n  email       = EXCLUDED.email,\n  company     = EXCLUDED.company,\n  status      = EXCLUDED.status,\n  amount      = EXCLUDED.amount,\n  updated_at  = EXCLUDED.updated_at,\n  ingested_at = EXCLUDED.ingested_at;",
+        "options": {}
+      },
+      "id": "4cbf8ac2-cd7f-4482-b77a-503217285b93",
+      "name": "Upsert to PostgreSQL",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -464,
+        336
+      ],
+      "notes": "Replace 'your_table_name' with your actual table. Ensure the table has an external_id UNIQUE constraint for the ON CONFLICT clause to work."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "error-check-condition",
+              "leftValue": "={{ $json._meta.error_count }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "cda4076c-bc28-4fed-b348-e07e1b9c6e69",
+      "name": "Errors Present?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -240,
+        336
+      ],
+      "notes": "Checks if the Transform node encountered any parsing errors. True = post error details. False = success report."
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "value": "#data-pipelines",
+          "__rl": true,
+          "mode": "name"
+        },
+        "text": "📊 *ETL Pipeline Complete*\n\n*Status:* ✅ Success\n*Records Processed:* {{ $json._meta.total_transformed }}\n*Errors:* {{ $json._meta.error_count }}\n*Completed at:* {{ $now.toISO() }}\n\nAll records upserted to PostgreSQL successfully.",
+        "otherOptions": {
+          "mrkdwn": true
+        }
+      },
+      "id": "3e9c451b-57f1-45ac-b336-d1af959db5ea",
+      "name": "Success Report",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        -16,
+        432
+      ],
+      "webhookId": "04e4351a-c3b0-4f0b-94f2-b01155680490"
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "value": "#data-pipelines",
+          "__rl": true,
+          "mode": "name"
+        },
+        "text": "⚠️ *ETL Pipeline Completed with Errors*\n\n*Records Processed:* {{ $json._meta.total_transformed }}\n*Error Count:* {{ $json._meta.error_count }}\n\n*Failed Records:*\n```{{ JSON.stringify($json._meta.errors, null, 2) }}```\n\nPlease investigate and re-run for failed records.",
+        "otherOptions": {
+          "mrkdwn": true
+        }
+      },
+      "id": "71d0bcd4-55f2-4469-b567-cd6f8d22b87f",
+      "name": "Error Report",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        -16,
+        240
+      ],
+      "webhookId": "d2ea7a31-f41c-40d1-8805-3fab6190f267"
+    },
+    {
+      "parameters": {
+        "content": "## 09 — ETL Pipeline: API → PostgreSQL\n\n**What this workflow does:**\nDaily at 2am: extracts records from a REST API, normalises the schema, upserts into PostgreSQL, and posts a status report to Slack.\n\n**Before you use this:**\n1. Replace the API URL with your actual data source\n2. Edit field mappings in the Transform node\n3. Replace 'your_table_name' with your actual table name\n4. Ensure `external_id` has a UNIQUE constraint in your DB\n5. Update all credential IDs\n\n**Pro tip:** Add an Error Trigger node to catch unexpected workflow failures separate from transform errors.",
+        "height": 720,
+        "width": 1444
+      },
+      "id": "c35fe1a4-2565-4d93-928a-4f45d906c49d",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1200,
+        -64
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "ETL Schedule": {
+      "main": [
+        [
+          {
+            "node": "Extract from API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract from API": {
+      "main": [
+        [
+          {
+            "node": "Transform Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transform Data": {
+      "main": [
+        [
+          {
+            "node": "Upsert to PostgreSQL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert to PostgreSQL": {
+      "main": [
+        [
+          {
+            "node": "Errors Present?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Errors Present?": {
+      "main": [
+        [
+          {
+            "node": "Error Report",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Success Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "bdc6e7a8-4dd2-4241-99f0-8a736db8a6c3",
+  "meta": {
+    "instanceId": "a68e86bb011358047357560db41b5697f3f34c05caa0129e8b53eebd8d3a6168"
+  },
+  "id": "vQvzuXNJZ7bKhRff",
+  "tags": [
+    {
+      "name": "Data Engineering",
+      "id": "R8jMwaFGoceXGjbq",
+      "updatedAt": "2026-04-28T19:35:32.904Z",
+      "createdAt": "2026-04-28T19:35:32.904Z"
+    },
+    {
+      "name": "Analytics",
+      "id": "SR2sQOwfJRF7LorP",
+      "updatedAt": "2026-04-28T19:11:31.537Z",
+      "createdAt": "2026-04-28T19:11:31.537Z"
+    },
+    {
+      "name": "Portfolio",
+      "id": "Zqi33NoBhd4JZsP1",
+      "updatedAt": "2026-04-28T19:15:14.982Z",
+      "createdAt": "2026-04-28T19:15:14.982Z"
+    }
+  ]
+}

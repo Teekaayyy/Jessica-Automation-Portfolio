@@ -1,0 +1,282 @@
+{
+  "name": "14 - Automated Follow-up Sequencer",
+  "nodes": [
+    {
+      "parameters": {
+        "eventsUi": {
+          "eventValues": [
+            {
+              "name": "deal.propertyChange"
+            }
+          ]
+        },
+        "additionalFields": {}
+      },
+      "id": "988f47f1-e3f7-4b9c-af5c-38fb4f6c0871",
+      "name": "Deal Stage Trigger",
+      "type": "n8n-nodes-base.hubspotTrigger",
+      "typeVersion": 1,
+      "position": [
+        -16,
+        208
+      ],
+      "webhookId": "44f693ed-65fb-4c45-b542-1abc53a37da0"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "stage-check",
+              "leftValue": "={{ $json.propertyValue }}",
+              "rightValue": "proposal_sent",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "cfcb057e-93a6-4dbe-b311-f1e659947130",
+      "name": "Is Proposal Sent?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        208,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 72,
+        "unit": "hours"
+      },
+      "id": "ae182cae-ad64-4854-91f9-c9c835be6bbd",
+      "name": "Wait 72 Hours",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        432,
+        208
+      ],
+      "webhookId": "6ae1a6cd-87ec-4eca-9e7b-911704e8becc",
+      "notes": "72 hours = 3 days. Change to 168 for Day 7 version, 336 for Day 14 version."
+    },
+    {
+      "parameters": {
+        "resource": "deal",
+        "operation": "get",
+        "dealId": "={{ $('Deal Stage Trigger').item.json.objectId }}",
+        "filters": {}
+      },
+      "id": "7a8df2c5-13ab-4f34-baf8-1022e435d819",
+      "name": "Re-check Deal Stage",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        656,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "still-idle",
+              "leftValue": "={{ $json.properties?.dealstage?.value }}",
+              "rightValue": "proposal_sent",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "84789f29-46c6-4ece-a932-5234e7418201",
+      "name": "Still Idle?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        880,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "additionalFields": {}
+      },
+      "id": "a6a30542-db2d-413d-94d1-8089d9796709",
+      "name": "Get Associated Contact",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        1104,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json[0]?.properties?.email?.value }}",
+        "subject": "=Following up — {{ $('Re-check Deal Stage').item.json.properties?.dealname?.value }}",
+        "emailType": "text",
+        "message": "=Hi {{ $json[0]?.properties?.firstname?.value || 'there' }},\n\nI wanted to follow up on the proposal I sent over — just checking whether you had a chance to review it or if you have any questions I can help with.\n\nHappy to jump on a quick call this week if that would be useful.\n\nBest,\n{{ $env.REP_NAME || 'The Team' }}",
+        "options": {}
+      },
+      "id": "17247095-29d9-48c3-9645-e7d8ef3334e5",
+      "name": "Send Follow-up Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1328,
+        208
+      ],
+      "webhookId": "29cb6d01-7471-4c3f-b606-61eacaa588bc"
+    },
+    {
+      "parameters": {
+        "resource": "note"
+      },
+      "id": "0bef535a-5a07-4da7-a3ee-796963675fcd",
+      "name": "Log to HubSpot",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        1552,
+        208
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 14 — Automated Follow-up Sequencer\n\n**HubSpot Trigger setup:**\nThis requires a HubSpot Developer App (not a private app) to receive webhook triggers. Configure the trigger in your HubSpot Developer portal.\n\n**Full sequence:** Copy this workflow 3 times:\n- Day 3 (72 hrs) — gentle check-in\n- Day 7 (168 hrs) — add more value\n- Day 14 (336 hrs) — final check-in / break-up\n\n**Env variable:** Set REP_NAME for the email signature.\n\n**Duplicate prevention:** Add a HubSpot contact property 'followup_d3_sent' and check it before sending.",
+        "height": 628,
+        "width": 1892
+      },
+      "id": "d1bda23c-8af0-4aa6-95fb-cd1279b183c5",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -130,
+        -260
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Deal Stage Trigger": {
+      "main": [
+        [
+          {
+            "node": "Is Proposal Sent?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Proposal Sent?": {
+      "main": [
+        [
+          {
+            "node": "Wait 72 Hours",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 72 Hours": {
+      "main": [
+        [
+          {
+            "node": "Re-check Deal Stage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Re-check Deal Stage": {
+      "main": [
+        [
+          {
+            "node": "Still Idle?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Still Idle?": {
+      "main": [
+        [
+          {
+            "node": "Get Associated Contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Associated Contact": {
+      "main": [
+        [
+          {
+            "node": "Send Follow-up Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Follow-up Email": {
+      "main": [
+        [
+          {
+            "node": "Log to HubSpot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "f971df94-f3b2-42eb-8604-1a5224e26dcf",
+  "meta": {
+    "instanceId": "a68e86bb011358047357560db41b5697f3f34c05caa0129e8b53eebd8d3a6168"
+  },
+  "id": "oaTtGpPB6qNGfQit",
+  "tags": [
+    {
+      "name": "CRM",
+      "id": "NxhBfn0F7UAZJC6y",
+      "updatedAt": "2026-04-28T19:01:16.094Z",
+      "createdAt": "2026-04-28T19:01:16.094Z"
+    }
+  ]
+}

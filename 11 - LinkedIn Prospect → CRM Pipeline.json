@@ -1,0 +1,246 @@
+{
+  "name": "11 - LinkedIn Prospect → CRM Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * 1"
+            }
+          ]
+        }
+      },
+      "id": "5e89b15d-f9c9-448c-b186-d6abea3d88f0",
+      "name": "Monday 8am Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1168,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://api.phantombuster.com/api/v2/agents/fetch-output",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "id",
+              "value": "={{ $env.PHANTOMBUSTER_AGENT_ID }}"
+            },
+            {
+              "name": "withOutput",
+              "value": "true"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Phantombuster-Key",
+              "value": "={{ $env.PHANTOMBUSTER_API_KEY }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "1f9b5857-9b65-49d6-b995-1626381057d1",
+      "name": "Fetch Phantombuster Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -944,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $input.first().json;\nconst outputUrl = response.output?.resultObject;\nif (!outputUrl) return [];\n\n// The output is usually a URL to the JSON file\n// If it's already an array, use it directly\nconst profiles = Array.isArray(response.output?.resultObject) \n  ? response.output.resultObject \n  : [];\n\nreturn profiles\n  .filter(p => p.firstName || p.first_name)\n  .map(p => ({\n    json: {\n      firstname: p.firstName || p.first_name || '',\n      lastname: p.lastName || p.last_name || '',\n      email: p.email || p.emailAddress || '',\n      jobtitle: p.occupation || p.title || p.jobTitle || '',\n      company: p.company || p.companyName || p.currentCompanyName || '',\n      linkedin_url: p.profileUrl || p.linkedinUrl || '',\n      location: p.location || p.locationName || '',\n      followers: p.followersCount || 0\n    }\n  }))\n  .filter(p => p.json.email || p.json.linkedin_url);\n"
+      },
+      "id": "fea401db-52d8-4464-956a-b45c1d9cc5c4",
+      "name": "Parse & Normalise",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -720,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.hubapi.com/crm/v3/objects/contacts/{{ $json.email }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer REPLACE_WITH_HUBSPOT_TOKEN"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "0e6f0942-0202-4d87-bfb0-2c4a9b7d09c3",
+      "name": "Check HubSpot Exists",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -496,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "exists-check",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": 404,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "2e20da9d-d635-41a7-984b-b5b9d4f6802e",
+      "name": "Net-New Contact?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -272,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "create"
+      },
+      "id": "08a14b75-703b-486a-91ec-58ea33c209b0",
+      "name": "Create Net-New Contact",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        -48,
+        224
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 11 — LinkedIn Prospect → CRM Pipeline\n\n**Env variables needed:**\n- PHANTOMBUSTER_API_KEY\n- PHANTOMBUSTER_AGENT_ID (your LinkedIn scraper agent ID)\n- REPLACE_WITH_HUBSPOT_TOKEN in the HTTP node (or use HubSpot credential)\n\n**Phantombuster setup:**\nUse the 'LinkedIn Sales Navigator Search Export' or 'LinkedIn Search Export' phantom. Run it before Monday 8am so output is ready.\n\n**Note:** If Phantombuster output is a URL (not inline JSON), add an HTTP Request node to fetch the output file before the Parse node.",
+        "height": 628,
+        "width": 1380
+      },
+      "id": "8d5b88bb-ed97-4fc1-b2d9-8ac645b2955e",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1248,
+        -128
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Monday 8am Trigger": {
+      "main": [
+        [
+          {
+            "node": "Fetch Phantombuster Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Phantombuster Data": {
+      "main": [
+        [
+          {
+            "node": "Parse & Normalise",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse & Normalise": {
+      "main": [
+        [
+          {
+            "node": "Check HubSpot Exists",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check HubSpot Exists": {
+      "main": [
+        [
+          {
+            "node": "Net-New Contact?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Net-New Contact?": {
+      "main": [
+        [
+          {
+            "node": "Create Net-New Contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "36ce679d-b4d0-4329-a87e-fdfb97bf781c",
+  "meta": {
+    "instanceId": "a68e86bb011358047357560db41b5697f3f34c05caa0129e8b53eebd8d3a6168"
+  },
+  "id": "1im3scKCraMHNMmP",
+  "tags": [
+    {
+      "name": "CRM",
+      "id": "NxhBfn0F7UAZJC6y",
+      "updatedAt": "2026-04-28T19:01:16.094Z",
+      "createdAt": "2026-04-28T19:01:16.094Z"
+    },
+    {
+      "name": "Lead Gen",
+      "id": "z9QxumNueVm11ZZk",
+      "updatedAt": "2026-04-28T19:01:16.017Z",
+      "createdAt": "2026-04-28T19:01:16.017Z"
+    }
+  ]
+}

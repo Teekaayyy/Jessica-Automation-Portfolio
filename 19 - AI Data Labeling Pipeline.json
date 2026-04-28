@@ -1,0 +1,340 @@
+{
+  "name": "19 - AI Data Labeling Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 */2 * * *"
+            }
+          ]
+        }
+      },
+      "id": "e05f6d5f-8e81-4320-a861-fdd48281c4fb",
+      "name": "Every 2 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -80,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "list",
+        "base": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        },
+        "table": {
+          "value": "Annotation Queue",
+          "__rl": true,
+          "mode": "name"
+        }
+      },
+      "id": "c85f02e5-c963-48bf-bcbe-4a1d951b98b0",
+      "name": "Fetch Unlabelled Records",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [
+        144,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "has-records",
+              "leftValue": "={{ $input.all().length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "8ceaa47b-e7dd-4ad1-ba86-33cf01fd2d7b",
+      "name": "Has Unlabelled?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        368,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 10,
+        "options": {}
+      },
+      "id": "f0895711-2aec-4ffe-96a4-d9dc78352749",
+      "name": "Batch 10 Records",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        592,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const batch = $input.all().map(i => ({ id: i.json.id, text: i.json.fields?.text || i.json.text || '' }));\nconst schema = process.env.LABEL_SCHEMA || 'positive, negative, neutral, irrelevant';\nreturn [{ json: { batch, schema, prompt: `Classify each item. Available labels: ${schema}\\n\\nReturn ONLY a JSON array: [{\"id\": \"...\", \"label\": \"...\", \"confidence\": 0.0-1.0}]\\n\\nItems:\\n${JSON.stringify(batch)}` } }];\n"
+      },
+      "id": "6ce402f4-1e2c-49f1-a582-b05a04dc952d",
+      "name": "Build Batch Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        816,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "value": "gpt-4o-mini",
+          "__rl": true,
+          "mode": "id"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are a precise data labelling system. Classify each item using ONLY the provided labels. Return ONLY a valid JSON array with no other text, preamble, or markdown.",
+              "role": "system"
+            },
+            {
+              "content": "={{ $json.prompt }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.05
+        }
+      },
+      "id": "21fac4a3-b8c5-493a-bcf8-27818bfcbc18",
+      "name": "AI Classify Batch",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        1040,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const response = $input.first().json.message.content;\nlet labels;\ntry {\n  const parsed = JSON.parse(response);\n  labels = Array.isArray(parsed) ? parsed : (parsed.results || parsed.classifications || Object.values(parsed)[0] || []);\n} catch (e) {\n  return [{ json: { error: 'Parse failed', raw: response } }];\n}\n\nconst originalBatch = $('Batch 10 Records').all().map(i => i.json);\n\nreturn labels.map((item, idx) => {\n  const original = originalBatch.find(r => r.id === item.id) || originalBatch[idx] || {};\n  const confidence = parseFloat(item.confidence) || 0;\n  return {\n    json: {\n      record_id: item.id || original.id,\n      label: item.label,\n      confidence: confidence,\n      status: confidence >= 0.75 ? 'labelled' : 'needs_review',\n      labelled_at: new Date().toISOString()\n    }\n  };\n});\n"
+      },
+      "id": "345e748d-e93a-4856-9b48-8a3b2b77c8fb",
+      "name": "Parse & Validate Labels",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1392,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        },
+        "table": {
+          "value": "Annotation Queue",
+          "__rl": true,
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "f378da7b-9f62-4034-9c80-e4cb2b9c055f",
+      "name": "Update Airtable Record",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [
+        1616,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "value": "REPLACE_WITH_SHEET_ID",
+          "__rl": true,
+          "mode": "id"
+        },
+        "sheetName": {
+          "value": "Labelling Progress",
+          "__rl": true,
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Run_Date": "={{ $now.toISO() }}",
+            "Batch_Size": "={{ $('Parse & Validate Labels').all().length }}",
+            "Labelled": "={{ $('Parse & Validate Labels').all().filter(i => i.json.status === 'labelled').length }}",
+            "Needs_Review": "={{ $('Parse & Validate Labels').all().filter(i => i.json.status === 'needs_review').length }}",
+            "Avg_Confidence": "={{ ($('Parse & Validate Labels').all().reduce((s,i) => s + i.json.confidence, 0) / $('Parse & Validate Labels').all().length).toFixed(2) }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "5a373211-3062-4834-89fe-41dbe4f83c68",
+      "name": "Log Progress",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1840,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 19 — AI Data Labeling Pipeline\n\n**Airtable setup:**\nCreate a base with table 'Annotation Queue' — columns:\n- text (long text)\n- label (single line)\n- confidence (number)\n- status: 'unlabelled' | 'labelled' | 'needs_review'\n- labelled_at (date)\n- created_at (date)\n\n**Env variable:** LABEL_SCHEMA — comma-separated list of valid labels\nExample: 'positive, negative, neutral, irrelevant'\n\n**Confidence threshold:** 0.75 — items below this go to 'needs_review' status for human review",
+        "height": 660,
+        "width": 2192
+      },
+      "id": "c09a55bb-3c2f-41f0-887a-905ea771b65a",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -160,
+        -96
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Every 2 Hours": {
+      "main": [
+        [
+          {
+            "node": "Fetch Unlabelled Records",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Unlabelled Records": {
+      "main": [
+        [
+          {
+            "node": "Has Unlabelled?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Unlabelled?": {
+      "main": [
+        [
+          {
+            "node": "Batch 10 Records",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Batch 10 Records": {
+      "main": [
+        [
+          {
+            "node": "Build Batch Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Batch Prompt": {
+      "main": [
+        [
+          {
+            "node": "AI Classify Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Classify Batch": {
+      "main": [
+        [
+          {
+            "node": "Parse & Validate Labels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse & Validate Labels": {
+      "main": [
+        [
+          {
+            "node": "Update Airtable Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Airtable Record": {
+      "main": [
+        [
+          {
+            "node": "Log Progress",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "95c10bd3-6b1b-4280-a6c0-28d7aee9a08e",
+  "meta": {
+    "instanceId": "a68e86bb011358047357560db41b5697f3f34c05caa0129e8b53eebd8d3a6168"
+  },
+  "id": "7q6d1Y3L9cBkooaF",
+  "tags": [
+    {
+      "name": "Data",
+      "id": "5KbLNplF3Sq9mH3B",
+      "updatedAt": "2026-04-28T19:18:56.839Z",
+      "createdAt": "2026-04-28T19:18:56.839Z"
+    },
+    {
+      "name": "AI",
+      "id": "xrgwRm56lrif7yln",
+      "updatedAt": "2026-04-28T19:11:31.586Z",
+      "createdAt": "2026-04-28T19:11:31.586Z"
+    }
+  ]
+}

@@ -1,0 +1,242 @@
+{
+  "name": "05 - Social Listening → CRM Sync",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 */6 * * *"
+            }
+          ]
+        }
+      },
+      "id": "56cc8d14-8831-48b9-bc04-18311103de69",
+      "name": "Every 6 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -32,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://api.talkwalker.com/api/v3/stream/p/{{ $env.TALKWALKER_PROJECT_ID }}/mentions",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "q",
+              "value": "={{ $env.BRAND_KEYWORDS }}"
+            },
+            {
+              "name": "created_after",
+              "value": "={{ $now.minus(6,'hours').toISO() }}"
+            },
+            {
+              "name": "lang",
+              "value": "en"
+            },
+            {
+              "name": "size",
+              "value": "100"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.TALKWALKER_TOKEN }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b525b45f-04ff-46c3-8f10-4a35ceb285fa",
+      "name": "Fetch Brand Mentions",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        192,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst mentions = data.mentions || data.results || data.data || [];\nreturn mentions.map(m => ({\n  json: {\n    handle: m.author?.twitter_screen_name || m.author?.name?.replace(/\\s+/g,'_').toLowerCase() || 'unknown',\n    display_name: m.author?.name || '',\n    followers: m.author?.followers_count || 0,\n    mention_text: (m.content || m.title || '').substring(0, 500),\n    mention_url: m.url || '',\n    source: m.source_type || 'social',\n    mention_date: m.created_at || new Date().toISOString(),\n    engagement: (m.engagement || 0)\n  }\n}));\n"
+      },
+      "id": "92ae313d-361d-409b-9915-b03d9ec07a04",
+      "name": "Parse Author Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        416,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "additionalFields": {},
+        "options": {}
+      },
+      "id": "7fa47f96-714c-47dd-a614-266837aefb43",
+      "name": "Upsert CRM Contact",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        640,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "note"
+      },
+      "id": "3ecf732d-a4e1-4356-882e-9ec1ad5de2b2",
+      "name": "Log Mention as Note",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        864,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "value": "REPLACE_WITH_SHEET_ID",
+          "__rl": true,
+          "mode": "id"
+        },
+        "sheetName": {
+          "value": "Social Mentions Log",
+          "__rl": true,
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Date": "={{ $('Parse Author Data').item.json.mention_date }}",
+            "Handle": "={{ $('Parse Author Data').item.json.handle }}",
+            "Name": "={{ $('Parse Author Data').item.json.display_name }}",
+            "Followers": "={{ $('Parse Author Data').item.json.followers }}",
+            "Mention": "={{ $('Parse Author Data').item.json.mention_text }}",
+            "Source": "={{ $('Parse Author Data').item.json.source }}",
+            "URL": "={{ $('Parse Author Data').item.json.mention_url }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "a53031b4-1b47-434b-b086-c429a80572a8",
+      "name": "Log to Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1088,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 05 — Social Listening → CRM Sync\n\n**Env variables needed:**\n- TALKWALKER_PROJECT_ID\n- TALKWALKER_TOKEN\n- BRAND_KEYWORDS (your Boolean search string)\n\n**HubSpot custom properties to create:**\n- twitter_screen_handle (single-line text)\n- twitter_followers_count (number)\n\n**Note:** Replace Talkwalker with Twitter/X API v2 or Brandwatch by updating the HTTP Request node URL and auth.",
+        "height": 720,
+        "width": 1468
+      },
+      "id": "4c856cf9-a5fc-491a-82ee-3191cb4fa317",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -128,
+        -144
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Every 6 Hours": {
+      "main": [
+        [
+          {
+            "node": "Fetch Brand Mentions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Brand Mentions": {
+      "main": [
+        [
+          {
+            "node": "Parse Author Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Author Data": {
+      "main": [
+        [
+          {
+            "node": "Upsert CRM Contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert CRM Contact": {
+      "main": [
+        [
+          {
+            "node": "Log Mention as Note",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Mention as Note": {
+      "main": [
+        [
+          {
+            "node": "Log to Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "a2c26f26-e454-4231-96dd-7382a8511626",
+  "meta": {
+    "instanceId": "a68e86bb011358047357560db41b5697f3f34c05caa0129e8b53eebd8d3a6168"
+  },
+  "id": "bUAmgH6fQfMrWmEh",
+  "tags": [
+    {
+      "name": "CRM",
+      "id": "NxhBfn0F7UAZJC6y",
+      "updatedAt": "2026-04-28T19:01:16.094Z",
+      "createdAt": "2026-04-28T19:01:16.094Z"
+    },
+    {
+      "name": "Analytics",
+      "id": "SR2sQOwfJRF7LorP",
+      "updatedAt": "2026-04-28T19:11:31.537Z",
+      "createdAt": "2026-04-28T19:11:31.537Z"
+    }
+  ]
+}

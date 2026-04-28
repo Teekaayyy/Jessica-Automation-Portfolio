@@ -1,0 +1,426 @@
+{
+  "name": "13 - Support Ticket Enrichment & Router",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "new-ticket",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "d114f009-70c4-4336-a765-9c9c3ba64f2d",
+      "name": "New Ticket Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1664,
+        416
+      ],
+      "webhookId": "3623fe07-a3de-48ec-b10a-ae383b9e3557"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "contactId": "={{ $json.body.requester_email }}",
+        "additionalFields": {}
+      },
+      "id": "34d2d750-7cd7-40df-8141-4a2f2ac3f0fb",
+      "name": "Enrich from HubSpot",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        -1440,
+        416
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const ticket = $('New Ticket Webhook').item.json.body;\nconst contact = $json.properties || {};\nreturn {\n  json: {\n    ticket_id: ticket.ticket_id,\n    subject: ticket.subject,\n    body: ticket.body,\n    requester_email: ticket.requester_email,\n    customer_name: `${contact.firstname?.value || ''} ${contact.lastname?.value || ''}`.trim() || ticket.requester_email,\n    plan: contact.plan?.value || 'unknown',\n    health_score: contact.health_score?.value || 'N/A',\n    lifecycle: contact.lifecyclestage?.value || 'unknown',\n    company: contact.company?.value || ''\n  }\n};\n"
+      },
+      "id": "fed3bfdf-7335-43ce-a86a-6a63c974499b",
+      "name": "Combine Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1216,
+        416
+      ]
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "value": "gpt-4o-mini",
+          "__rl": true,
+          "mode": "id"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are a support triage system. Classify the ticket accurately, considering customer context.\n\nCategories:\n- billing: payment, invoice, refund, pricing, subscription\n- technical: bug, error, broken, not working, crash, API\n- onboarding: setup, getting started, how to, tutorial, configuration\n- account: login, password, permissions, settings, access\n- general: everything else\n\nPriority levels:\n- P1: Critical — data loss, security issue, complete outage for paying customer\n- P2: High — significant feature broken, high-value customer impacted\n- P3: Normal — minor issue, question, enhancement request\n\nConsider: enterprise/pro plan customers warrant higher priority for the same issue.\n\nReturn ONLY JSON:\n{\"category\": \"billing|technical|onboarding|account|general\", \"priority\": \"P1|P2|P3\", \"summary\": \"one-sentence description\", \"suggested_response\": \"brief suggested first reply\"}",
+              "role": "system"
+            },
+            {
+              "content": "=Subject: {{ $json.subject }}\nBody: {{ $json.body?.substring(0,1500) }}\n\nCustomer context:\n- Plan: {{ $json.plan }}\n- Health Score: {{ $json.health_score }}/100\n- Lifecycle Stage: {{ $json.lifecycle }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.1
+        }
+      },
+      "id": "9b78fed2-b016-43c3-86d6-ba011ef68a33",
+      "name": "AI Triage",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        -992,
+        416
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const triage = JSON.parse($json.message.content);\nconst ctx = $('Combine Context').item.json;\nreturn { json: { ...ctx, ...triage } };\n"
+      },
+      "id": "2472e164-a8cb-4529-8662-97b10013044d",
+      "name": "Merge Triage",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -640,
+        416
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.priority }}",
+                    "rightValue": "P1",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "p1_critical"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.category }}",
+                    "rightValue": "billing",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "billing"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.category }}",
+                    "rightValue": "technical",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "technical"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.category }}",
+                    "rightValue": "onboarding",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "onboarding"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "f6abaf86-cdf8-45ac-b1a3-ab5fea8bf53e",
+      "name": "Route Ticket",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        -416,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "value": "#support-p1-critical",
+          "__rl": true,
+          "mode": "name"
+        },
+        "text": "🚨 *P1 CRITICAL — IMMEDIATE RESPONSE REQUIRED*\n\n*Customer:* {{ $json.customer_name }} ({{ $json.plan }} plan)\n*Health Score:* {{ $json.health_score }}/100\n*Subject:* {{ $json.subject }}\n*AI Summary:* {{ $json.summary }}\n\n*Suggested First Response:*\n_{{ $json.suggested_response }}_\n\n*Ticket ID:* {{ $json.ticket_id }}",
+        "otherOptions": {
+          "mrkdwn": true
+        }
+      },
+      "id": "18b78a0a-df6a-40b9-b719-5cf9eb56edb2",
+      "name": "P1 Critical Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        -192,
+        128
+      ],
+      "webhookId": "259e9072-a113-4dfe-84f6-aebb532a2586"
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "value": "#support-billing",
+          "__rl": true,
+          "mode": "name"
+        },
+        "text": "💳 *New Billing Ticket — {{ $json.priority }}*\n\n*Customer:* {{ $json.customer_name }} | Plan: {{ $json.plan }}\n*Subject:* {{ $json.subject }}\n*AI Summary:* {{ $json.summary }}\n\n*Ticket ID:* {{ $json.ticket_id }}",
+        "otherOptions": {
+          "mrkdwn": true
+        }
+      },
+      "id": "6657d191-46bc-426b-99fd-c2d1b03a6a01",
+      "name": "Billing Channel",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        -192,
+        320
+      ],
+      "webhookId": "5472dd3d-6262-409c-be20-0d5ec351f55a"
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "value": "#support-technical",
+          "__rl": true,
+          "mode": "name"
+        },
+        "text": "🔧 *New Technical Ticket — {{ $json.priority }}*\n\n*Customer:* {{ $json.customer_name }} | Plan: {{ $json.plan }}\n*Subject:* {{ $json.subject }}\n*AI Summary:* {{ $json.summary }}\n*Ticket ID:* {{ $json.ticket_id }}",
+        "otherOptions": {
+          "mrkdwn": true
+        }
+      },
+      "id": "50812b1c-7d72-4733-a958-91c4ccc418f2",
+      "name": "Technical Channel",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        -192,
+        512
+      ],
+      "webhookId": "283e8385-7db2-4380-8890-83db7d08f589"
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "value": "#support-onboarding",
+          "__rl": true,
+          "mode": "name"
+        },
+        "text": "🎓 *New Onboarding Ticket — {{ $json.priority }}*\n\n*Customer:* {{ $json.customer_name }} | Plan: {{ $json.plan }}\n*Subject:* {{ $json.subject }}\n*AI Summary:* {{ $json.summary }}\n*Ticket ID:* {{ $json.ticket_id }}",
+        "otherOptions": {
+          "mrkdwn": true
+        }
+      },
+      "id": "9ce5ef14-5ab3-4f12-9724-b6e7e468c305",
+      "name": "Onboarding Channel",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        -192,
+        704
+      ],
+      "webhookId": "f7443333-cc70-4603-ba45-44489fcbc1a5"
+    },
+    {
+      "parameters": {
+        "content": "## 13 — Support Ticket Enrichment & Router\n\n**Webhook payload (from Zendesk / Freshdesk / email-to-webhook):**\n```json\n{\n  \"ticket_id\": \"TKT-001\",\n  \"subject\": \"Can't log in to my account\",\n  \"body\": \"Full ticket body text...\",\n  \"requester_email\": \"customer@example.com\"\n}\n```\n\n**Slack channels to create:** #support-p1-critical, #support-billing, #support-technical, #support-onboarding",
+        "height": 876,
+        "width": 1760
+      },
+      "id": "2403a92d-a201-41d6-95cb-bab137f26134",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1760,
+        -12
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "New Ticket Webhook": {
+      "main": [
+        [
+          {
+            "node": "Enrich from HubSpot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enrich from HubSpot": {
+      "main": [
+        [
+          {
+            "node": "Combine Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Combine Context": {
+      "main": [
+        [
+          {
+            "node": "AI Triage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Triage": {
+      "main": [
+        [
+          {
+            "node": "Merge Triage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Triage": {
+      "main": [
+        [
+          {
+            "node": "Route Ticket",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Ticket": {
+      "main": [
+        [
+          {
+            "node": "P1 Critical Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Billing Channel",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Technical Channel",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Onboarding Channel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "40cacf4b-f710-4dd4-a254-59580028c3a0",
+  "meta": {
+    "instanceId": "a68e86bb011358047357560db41b5697f3f34c05caa0129e8b53eebd8d3a6168"
+  },
+  "id": "oI9jf4o3cVJHHgvn",
+  "tags": [
+    {
+      "name": "CRM",
+      "id": "NxhBfn0F7UAZJC6y",
+      "updatedAt": "2026-04-28T19:01:16.094Z",
+      "createdAt": "2026-04-28T19:01:16.094Z"
+    },
+    {
+      "name": "AI",
+      "id": "xrgwRm56lrif7yln",
+      "updatedAt": "2026-04-28T19:11:31.586Z",
+      "createdAt": "2026-04-28T19:11:31.586Z"
+    }
+  ]
+}

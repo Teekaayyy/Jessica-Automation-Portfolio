@@ -1,0 +1,295 @@
+{
+  "name": "15 - Data Deduplication Engine",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 16 * * 5"
+            }
+          ]
+        }
+      },
+      "id": "cde0c035-bf84-4619-a950-fb5157afc29c",
+      "name": "Friday 4pm Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -96,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "getRows",
+        "documentId": {
+          "value": "REPLACE_WITH_SHEET_ID",
+          "__rl": true,
+          "mode": "id"
+        }
+      },
+      "id": "40bb076e-6d9e-49ed-89a1-cb7fb014c5cf",
+      "name": "Read Raw Dataset",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        128,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Fuzzy Deduplication Engine ──────────────────────────────────\n// Uses normalised string similarity on email domain + name + company\n// Threshold: 85% similarity marks as DUPLICATE\n\nconst rows = $input.all().map((item, idx) => ({ ...item.json, _idx: idx }));\nconst THRESHOLD = 0.85;\n\n// Levenshtein distance\nfunction levenshtein(a, b) {\n  if (!a || !b) return 1;\n  a = a.toLowerCase().trim(); b = b.toLowerCase().trim();\n  if (a === b) return 0;\n  const m = a.length, n = b.length;\n  const dp = Array.from({length: m + 1}, (_, i) => Array.from({length: n + 1}, (_, j) => i === 0 ? j : j === 0 ? i : 0));\n  for (let i = 1; i <= m; i++) for (let j = 1; j <= n; j++) dp[i][j] = a[i-1] === b[j-1] ? dp[i-1][j-1] : 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);\n  return dp[m][n];\n}\n\nfunction similarity(a, b) {\n  if (!a && !b) return 1;\n  if (!a || !b) return 0;\n  const dist = levenshtein(String(a), String(b));\n  const maxLen = Math.max(String(a).length, String(b).length);\n  return maxLen === 0 ? 1 : 1 - (dist / maxLen);\n}\n\nfunction getEmailDomain(email) {\n  return (email || '').split('@')[1]?.toLowerCase() || '';\n}\n\nconst status = new Array(rows.length).fill('KEEP');\nconst audit_log = [];\n\nfor (let i = 0; i < rows.length; i++) {\n  if (status[i] === 'DUPLICATE') continue;\n  for (let j = i + 1; j < rows.length; j++) {\n    if (status[j] === 'DUPLICATE') continue;\n    const a = rows[i], b = rows[j];\n    \n    // Check 1: Exact email match\n    const emailA = (a.email || a.Email || '').toLowerCase();\n    const emailB = (b.email || b.Email || '').toLowerCase();\n    if (emailA && emailB && emailA === emailB) {\n      status[j] = 'DUPLICATE';\n      audit_log.push({ kept_idx: i, removed_idx: j, reason: 'Exact email match', similarity: 1.0 });\n      continue;\n    }\n    \n    // Check 2: Same email domain + fuzzy name match\n    const domainMatch = emailA && emailB && getEmailDomain(emailA) === getEmailDomain(emailB) && getEmailDomain(emailA) !== 'gmail.com';\n    const nameSim = similarity(`${a.firstname || a.Firstname || ''} ${a.lastname || a.Lastname || ''}`, `${b.firstname || b.Firstname || ''} ${b.lastname || b.Lastname || ''}`);\n    \n    if (domainMatch && nameSim >= THRESHOLD) {\n      status[j] = 'DUPLICATE';\n      audit_log.push({ kept_idx: i, removed_idx: j, reason: `Domain match + name similarity ${(nameSim*100).toFixed(0)}%`, similarity: nameSim });\n    }\n  }\n}\n\nconst clean_rows = rows.filter((_, i) => status[i] === 'KEEP');\nconst dup_rows = rows.filter((_, i) => status[i] === 'DUPLICATE');\n\nreturn [{ json: {\n  original_count: rows.length,\n  clean_count: clean_rows.length,\n  duplicate_count: dup_rows.length,\n  clean_rows,\n  audit_log\n}}];\n"
+      },
+      "id": "78fe1382-f7ec-44b6-a309-68c655656bd7",
+      "name": "Fuzzy Dedup Algorithm",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        352,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "clear",
+        "documentId": {
+          "value": "REPLACE_WITH_SHEET_ID",
+          "__rl": true,
+          "mode": "id"
+        },
+        "sheetName": {
+          "value": "Clean Contacts",
+          "__rl": true,
+          "mode": "name"
+        }
+      },
+      "id": "b2707d2d-1431-4e3f-bc57-180f12bbf888",
+      "name": "Clear Output Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        576,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $('Fuzzy Dedup Algorithm').first().json;\nreturn data.clean_rows.map(row => {\n  const { _idx, ...cleanRow } = row;\n  return { json: cleanRow };\n});\n"
+      },
+      "id": "47880f6c-a986-40f6-9408-63bebd6b0063",
+      "name": "Prepare Clean Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "value": "REPLACE_WITH_SHEET_ID",
+          "__rl": true,
+          "mode": "id"
+        },
+        "sheetName": {
+          "value": "Clean Contacts",
+          "__rl": true,
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData"
+        },
+        "options": {}
+      },
+      "id": "5f1f89ba-6c1b-4a93-833e-d4a28cfcfc08",
+      "name": "Write Clean Data",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1024,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "value": "REPLACE_WITH_SHEET_ID",
+          "__rl": true,
+          "mode": "id"
+        },
+        "sheetName": {
+          "value": "Dedup Audit Log",
+          "__rl": true,
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Run_Date": "={{ $now.toISO() }}",
+            "Original_Count": "={{ $('Fuzzy Dedup Algorithm').first().json.original_count }}",
+            "Clean_Count": "={{ $('Fuzzy Dedup Algorithm').first().json.clean_count }}",
+            "Duplicates_Removed": "={{ $('Fuzzy Dedup Algorithm').first().json.duplicate_count }}",
+            "Audit_Details": "={{ JSON.stringify($('Fuzzy Dedup Algorithm').first().json.audit_log) }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "90861d00-437b-4724-9418-196d35724041",
+      "name": "Write Audit Log",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1248,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "value": "#data-ops",
+          "__rl": true,
+          "mode": "name"
+        },
+        "text": "🧹 *Deduplication Complete*\n\n*Original records:* {{ $('Fuzzy Dedup Algorithm').first().json.original_count }}\n*Clean records:* {{ $('Fuzzy Dedup Algorithm').first().json.clean_count }}\n*Duplicates removed:* {{ $('Fuzzy Dedup Algorithm').first().json.duplicate_count }}\n*Reduction:* {{ (($('Fuzzy Dedup Algorithm').first().json.duplicate_count / $('Fuzzy Dedup Algorithm').first().json.original_count) * 100).toFixed(1) }}%\n\nAudit log saved to 'Dedup Audit Log' sheet. Review before acting on results.",
+        "otherOptions": {
+          "mrkdwn": true
+        }
+      },
+      "id": "f7c99b4a-40e2-4678-bb03-c2d739d432a3",
+      "name": "Dedup Report",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1472,
+        272
+      ],
+      "webhookId": "025d5f49-6e41-44fe-9cdb-45398d846d98"
+    },
+    {
+      "parameters": {
+        "content": "## 15 — Data Deduplication Engine\n\n**Sheet setup (3 tabs required):**\n1. 'Raw Contacts' — your input data with headers\n2. 'Clean Contacts' — output (workflow clears and rewrites this)\n3. 'Dedup Audit Log' — full history of all dedup runs\n\n**Matching logic:**\n- Exact email match → duplicate\n- Same corporate email domain + 85%+ name similarity → duplicate\n- Personal domains (gmail.com etc.) are excluded from domain matching\n\n**Adjust threshold:** Change THRESHOLD = 0.85 in the Code node (0 = exact match only, 1 = everything matches)",
+        "height": 676,
+        "width": 1904
+      },
+      "id": "932d61d3-2c40-47c6-8e28-8fbf2c707253",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -216,
+        -244
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Friday 4pm Trigger": {
+      "main": [
+        [
+          {
+            "node": "Read Raw Dataset",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Raw Dataset": {
+      "main": [
+        [
+          {
+            "node": "Fuzzy Dedup Algorithm",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fuzzy Dedup Algorithm": {
+      "main": [
+        [
+          {
+            "node": "Clear Output Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clear Output Sheet": {
+      "main": [
+        [
+          {
+            "node": "Prepare Clean Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Clean Rows": {
+      "main": [
+        [
+          {
+            "node": "Write Clean Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Clean Data": {
+      "main": [
+        [
+          {
+            "node": "Write Audit Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Audit Log": {
+      "main": [
+        [
+          {
+            "node": "Dedup Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "39a0d721-976d-44c0-94e1-17af8c60d202",
+  "meta": {
+    "instanceId": "a68e86bb011358047357560db41b5697f3f34c05caa0129e8b53eebd8d3a6168"
+  },
+  "id": "H8ASUOiuvkh37gVF",
+  "tags": [
+    {
+      "name": "Data",
+      "id": "5KbLNplF3Sq9mH3B",
+      "updatedAt": "2026-04-28T19:18:56.839Z",
+      "createdAt": "2026-04-28T19:18:56.839Z"
+    },
+    {
+      "name": "Analytics",
+      "id": "SR2sQOwfJRF7LorP",
+      "updatedAt": "2026-04-28T19:11:31.537Z",
+      "createdAt": "2026-04-28T19:11:31.537Z"
+    }
+  ]
+}
