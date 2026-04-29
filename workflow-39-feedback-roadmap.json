@@ -1,0 +1,376 @@
+{
+  "name": "39 - AI Product Feedback \u2192 Roadmap Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 16 * * 5"
+            }
+          ]
+        }
+      },
+      "id": "w39-1",
+      "name": "Friday 4pm Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "deal",
+        "operation": "getAll",
+        "additionalFields": {
+          "filters": [
+            {
+              "propertyName": "dealstage",
+              "operator": "EQ",
+              "value": "closedlost"
+            },
+            {
+              "propertyName": "closedate",
+              "operator": "GTE",
+              "value": "={{ $now.minus(7,'days').toMillis() }}"
+            }
+          ],
+          "properties": [
+            "dealname",
+            "amount",
+            "closed_lost_reason",
+            "company"
+          ]
+        }
+      },
+      "id": "w39-2",
+      "name": "Get Lost Deals",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        420,
+        180
+      ],
+      "credentials": {
+        "hubspotApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "HubSpot Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.delighted.com/v1/survey_responses.json",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Basic {{ Buffer.from($env.DELIGHTED_API_KEY + ':').toString('base64') }}"
+            }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "since",
+              "value": "={{ Math.floor($now.minus(7,'days').toMillis()/1000) }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "w39-3",
+      "name": "NPS Verbatims",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        420,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "ticket",
+        "operation": "getAll",
+        "additionalFields": {
+          "filters": [
+            {
+              "propertyName": "hs_ticket_category",
+              "operator": "IN",
+              "value": "FEATURE_REQUEST,PRODUCT_FEEDBACK"
+            },
+            {
+              "propertyName": "createdate",
+              "operator": "GTE",
+              "value": "={{ $now.minus(7,'days').toMillis() }}"
+            }
+          ],
+          "properties": [
+            "subject",
+            "content",
+            "hs_ticket_category",
+            "hs_pipeline",
+            "source_type"
+          ]
+        }
+      },
+      "id": "w39-4",
+      "name": "Support Feedback",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        420,
+        420
+      ],
+      "credentials": {
+        "hubspotApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "HubSpot Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combineAll",
+        "options": {}
+      },
+      "id": "w39-5",
+      "name": "Merge Feedback",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        640,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const items = $input.all();\nconst all = [];\n\n// Lost deals\nitems.filter(i => i.json.properties?.closed_lost_reason).forEach(d => {\n  const reason = d.json.properties?.closed_lost_reason?.value || '';\n  if (reason.length > 5) all.push({ source:'lost_deal', text: reason, value: parseFloat(d.json.properties?.amount?.value || 0) });\n});\n\n// NPS verbatims\n(items.find(i => Array.isArray(i.json))?.json || []).filter(r => r.comment).forEach(r => {\n  all.push({ source:'nps', text: r.comment, value: 0, score: r.score });\n});\n\n// Support tickets\nitems.filter(i => i.json.properties?.subject).forEach(t => {\n  const text = (t.json.properties?.subject?.value || '') + ': ' + (t.json.properties?.content?.value || '');\n  all.push({ source:'support', text: text.slice(0,300), value: 0 });\n});\n\nreturn [{ json: { feedback: all, count: all.length, week: new Date().toLocaleDateString('en-GB') } }];\n"
+      },
+      "id": "w39-6",
+      "name": "Normalise Feedback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        860,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "modelId": {
+          "value": "gpt-4o",
+          "__rl": true,
+          "mode": "id"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are a product manager classifying customer feedback into feature themes.\n\nTheme taxonomy (use ONLY these):\nOnboarding_Experience, Reporting_Analytics, API_Integrations, Performance_Speed, Mobile_App, Bulk_Actions, Automation_Workflows, Collaboration_Features, Pricing_Packaging, Data_Import_Export, Search_Filtering, Notifications_Alerts, Documentation, Permissions_Access, General_Bug\n\nFor each feedback item return a JSON array: [{\"index\": 0, \"theme\": \"...\", \"urgency\": 1-5, \"is_retention_risk\": true|false}]\n\nReturn ONLY the JSON array.",
+              "role": "system"
+            },
+            {
+              "content": "=Classify {{ $json.count }} feedback items:\n{{ $json.feedback.map((f,i) => i+': ['+f.source+'] '+f.text.slice(0,150)).join('\\n') }}",
+              "role": "user"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0
+        }
+      },
+      "id": "w39-7",
+      "name": "Classify Themes",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        1080,
+        300
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenAI Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "let classified;\ntry { classified = JSON.parse($json.message.content); } catch(e) {\n  const match = $json.message.content.match(/\\[.*\\]/s);\n  classified = match ? JSON.parse(match[0]) : [];\n}\n\nconst feedback = $('Normalise Feedback').first().json.feedback;\nconst THRESHOLD = parseFloat($env.JIRA_THRESHOLD || '5000');\n\nconst themes = {};\nclassified.forEach(item => {\n  const f = feedback[item.index];\n  if (!f) return;\n  const t = item.theme;\n  if (!themes[t]) themes[t] = { theme: t, count: 0, total_value: 0, urgency_sum: 0, retention_risk_count: 0, quotes: [] };\n  themes[t].count++;\n  themes[t].total_value += f.value || 0;\n  themes[t].urgency_sum += item.urgency;\n  if (item.is_retention_risk) themes[t].retention_risk_count++;\n  if (themes[t].quotes.length < 3) themes[t].quotes.push(f.text.slice(0,100));\n});\n\nconst ranked = Object.values(themes)\n  .map(t => ({ ...t, avg_urgency: (t.urgency_sum/t.count).toFixed(1), impact_score: Math.round(t.total_value * 0.5 + t.count * 200 + t.retention_risk_count * 1000) }))\n  .sort((a,b) => b.impact_score - a.impact_score)\n  .filter(t => t.impact_score >= THRESHOLD);\n\nreturn ranked.map(t => ({ json: t }));\n"
+      },
+      "id": "w39-8",
+      "name": "Score & Filter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1300,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.atlassian.com/ex/jira/REPLACE_CLOUD_ID/rest/api/3/issue",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Basic {{ Buffer.from($env.JIRA_EMAIL + ':' + $env.JIRA_API_TOKEN).toString('base64') }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"fields\":{\"project\":{\"key\":\"{{ $env.JIRA_PROJECT_KEY }}\"},\"issuetype\":{\"name\":\"Epic\"},\"summary\":\"[Feedback] {{ $json.theme.replace(/_/g,' ') }}\",\"description\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Impact Score: {{ $json.impact_score }} | Mentions: {{ $json.count }} | Revenue at risk: \u00a3{{ parseInt($json.total_value).toLocaleString() }} | Retention risks: {{ $json.retention_risk_count }}\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Top quotes: {{ $json.quotes.join(' | ') }}\"}]}]},\"labels\":[\"feedback-driven\",\"auto-generated\"],\"priority\":{\"name\":\"{{ $json.avg_urgency >= 4 ? 'High' : $json.avg_urgency >= 2.5 ? 'Medium' : 'Low' }}\"}}}",
+        "options": {}
+      },
+      "id": "w39-9",
+      "name": "Create Jira Epic",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1520,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 39 \u2014 Product Feedback \u2192 Roadmap Pipeline\n\n**Env variables needed:**\n- DELIGHTED_API_KEY: NPS platform\n- JIRA_EMAIL: Jira login email\n- JIRA_API_TOKEN: Jira API token (from id.atlassian.com)\n- JIRA_PROJECT_KEY: e.g. PROD\n- JIRA_THRESHOLD: minimum impact score to create epic (default: 5000)\n- Replace REPLACE_CLOUD_ID in the Jira URL with your Atlassian cloud ID\n\n**Theme taxonomy:** Edit the taxonomy in the Classify Themes prompt to match your product's feedback categories.",
+        "height": 220,
+        "width": 400
+      },
+      "id": "w39-10",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        200,
+        560
+      ]
+    }
+  ],
+  "connections": {
+    "Friday 4pm Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Lost Deals",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "NPS Verbatims",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Support Feedback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Lost Deals": {
+      "main": [
+        [
+          {
+            "node": "Merge Feedback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "NPS Verbatims": {
+      "main": [
+        [
+          {
+            "node": "Merge Feedback",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Support Feedback": {
+      "main": [
+        [
+          {
+            "node": "Merge Feedback",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Merge Feedback": {
+      "main": [
+        [
+          {
+            "node": "Normalise Feedback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalise Feedback": {
+      "main": [
+        [
+          {
+            "node": "Classify Themes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Themes": {
+      "main": [
+        [
+          {
+            "node": "Score & Filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score & Filter": {
+      "main": [
+        [
+          {
+            "node": "Create Jira Epic",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "id": "workflow-39"
+}

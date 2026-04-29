@@ -1,0 +1,400 @@
+{
+  "name": "24 - AI Personalised Email Campaign Engine",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "personalised-campaign",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "w24-001",
+      "name": "Campaign Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\"status\":\"started\",\"message\":\"Campaign is running. Emails will be sent after quality review.\"}"
+      },
+      "id": "w24-002",
+      "name": "Immediate Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        470,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "contact",
+        "operation": "getAll",
+        "additionalFields": {
+          "listId": "={{ $json.body.list_id }}",
+          "properties": [
+            "email",
+            "firstname",
+            "lastname",
+            "jobtitle",
+            "company",
+            "last_email_opened",
+            "lifecyclestage",
+            "recent_deal_amount"
+          ],
+          "limit": 500
+        }
+      },
+      "id": "w24-003",
+      "name": "Get Segment Contacts",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        470,
+        300
+      ],
+      "credentials": {
+        "hubspotApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "HubSpot Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "batchSize": 5,
+        "options": {}
+      },
+      "id": "w24-004",
+      "name": "Batch 5 Contacts",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        690,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://news.google.com/rss/search?q={{ encodeURIComponent($json.properties?.company?.value || 'business') }}&hl=en&num=3",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "w24-005",
+      "name": "Fetch Company News",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        910,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const contact = $('Batch 5 Contacts').item.json;\nconst newsXml = $json?.data || '';\nconst headlines = [...newsXml.matchAll(/<title>([^<]+)<\\/title>/g)].slice(1,4).map(m => m[1]);\nconst campaign_goal = $('Campaign Trigger').item.json.body.campaign_goal || 'schedule a discovery call';\nconst sender_name = $('Campaign Trigger').item.json.body.sender_name || 'the team';\n\nreturn {\n  json: {\n    contact_id: contact.id,\n    email: contact.properties?.email?.value,\n    firstname: contact.properties?.firstname?.value || 'there',\n    lastname: contact.properties?.lastname?.value,\n    jobtitle: contact.properties?.jobtitle?.value || '',\n    company: contact.properties?.company?.value || '',\n    recent_news: headlines,\n    campaign_goal,\n    sender_name\n  }\n};\n"
+      },
+      "id": "w24-006",
+      "name": "Build Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1130,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "modelId": {
+          "value": "gpt-4o",
+          "__rl": true,
+          "mode": "id"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are an expert B2B outbound email writer. Write personalised, natural-sounding emails that get replies \u2014 not templates. The email must reference something specific about this person or their company. Avoid sales clich\u00e9s. Write like a thoughtful colleague, not a salesperson.\n\nEmail requirements:\n- 100-160 words max\n- Opening hook tied to a specific company/role/news detail\n- One clear, relevant value proposition\n- One specific CTA\n- No subject line in the body\n- Conversational, peer-to-peer tone\n\nReturn ONLY JSON: {\"subject\": \"...\", \"body\": \"...\"}",
+              "role": "system"
+            },
+            {
+              "content": "=Contact: {{ $json.firstname }} {{ $json.lastname }}, {{ $json.jobtitle }} at {{ $json.company }}\nCampaign goal: {{ $json.campaign_goal }}\nSender: {{ $json.sender_name }}\nRecent company news: {{ $json.recent_news?.join(' | ') || 'No recent news found' }}",
+              "role": "user"
+            }
+          ]
+        },
+        "options": {
+          "responseFormat": "json_object",
+          "temperature": 0.75
+        }
+      },
+      "id": "w24-007",
+      "name": "Generate Email",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        1350,
+        300
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenAI Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const email = JSON.parse($json.message.content);\nconst ctx = $('Build Context').item.json;\nconst body = email.body || '';\n\n// Quality checks\nconst word_count = body.split(/\\s+/).length;\nconst spam_phrases = ['synergies','leverage','reach out','touch base','hop on a call','quick call'];\nconst has_spam = spam_phrases.some(p => body.toLowerCase().includes(p));\nconst personalisation_score = (ctx.company && body.includes(ctx.company) ? 1 : 0) + (ctx.firstname && body.includes(ctx.firstname) ? 1 : 0) + (ctx.recent_news?.some(n => body.includes(n.split(' ')[0])) ? 1 : 0);\n\nconst passes = word_count >= 80 && word_count <= 220 && !has_spam && personalisation_score >= 1;\n\nreturn {\n  json: {\n    ...ctx,\n    subject: email.subject,\n    body,\n    word_count,\n    personalisation_score,\n    passes_qc: passes,\n    qc_reason: !passes ? `word_count:${word_count}, spam:${has_spam}, personalisation:${personalisation_score}` : 'OK'\n  }\n};\n"
+      },
+      "id": "w24-008",
+      "name": "Quality Gate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1570,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "qc-check",
+              "leftValue": "={{ $json.passes_qc }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "w24-009",
+      "name": "Passes QC?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1790,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.email }}",
+        "subject": "={{ $json.subject }}",
+        "emailType": "text",
+        "message": "={{ $json.body }}",
+        "options": {
+          "replyTo": "={{ $env.REPLY_TO_EMAIL }}"
+        }
+      },
+      "id": "w24-010",
+      "name": "Send Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2010,
+        180
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Gmail Rep Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "emailMetadata",
+        "operation": "create",
+        "toObjectId": "={{ $json.contact_id }}",
+        "toObjectType": "contacts",
+        "additionalFields": {
+          "hs_email_subject": "={{ $json.subject }}",
+          "hs_email_text": "={{ $json.body }}",
+          "hs_email_direction": "EMAIL",
+          "hs_timestamp": "={{ Date.now() }}"
+        }
+      },
+      "id": "w24-011",
+      "name": "Log to HubSpot",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        2230,
+        180
+      ],
+      "credentials": {
+        "hubspotApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "HubSpot Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## 24 \u2014 AI Email Personalisation Engine\n\n**Webhook payload:**\n```json\n{\n  \"list_id\": \"12345\",\n  \"campaign_goal\": \"schedule a discovery call\",\n  \"sender_name\": \"Jessica\"\n}\n```\n\n**Env variables needed:**\n- REPLY_TO_EMAIL: the email address replies should go to\n\n**Important:** Test with 3-5 contacts first. Review quality gate output before enabling full sends. The rep's Gmail OAuth account is used for sending \u2014 emails come from a real person.",
+        "height": 240,
+        "width": 420
+      },
+      "id": "w24-012",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        250,
+        540
+      ]
+    }
+  ],
+  "connections": {
+    "Campaign Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Segment Contacts",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Immediate Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Segment Contacts": {
+      "main": [
+        [
+          {
+            "node": "Batch 5 Contacts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Batch 5 Contacts": {
+      "main": [
+        [
+          {
+            "node": "Fetch Company News",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Company News": {
+      "main": [
+        [
+          {
+            "node": "Build Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Context": {
+      "main": [
+        [
+          {
+            "node": "Generate Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Email": {
+      "main": [
+        [
+          {
+            "node": "Quality Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Quality Gate": {
+      "main": [
+        [
+          {
+            "node": "Passes QC?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Passes QC?": {
+      "main": [
+        [
+          {
+            "node": "Send Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Send Email": {
+      "main": [
+        [
+          {
+            "node": "Log to HubSpot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "id": "workflow-24",
+  "tags": [
+    {
+      "id": "1",
+      "name": "CRM"
+    },
+    {
+      "id": "5",
+      "name": "AI"
+    },
+    {
+      "id": "6",
+      "name": "Lead Gen"
+    }
+  ]
+}

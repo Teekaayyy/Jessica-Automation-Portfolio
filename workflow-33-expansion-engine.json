@@ -1,0 +1,327 @@
+{
+  "name": "33 - Revenue Expansion & Upsell Engine",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "w33-1",
+      "name": "Daily 8am Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://YOUR_APP_API/api/v1/accounts/usage",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.PRODUCT_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "w33-2",
+      "name": "Pull Usage Metrics",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        420,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "contact",
+        "operation": "getAll",
+        "additionalFields": {
+          "filters": [
+            {
+              "propertyName": "lifecyclestage",
+              "operator": "EQ",
+              "value": "customer"
+            }
+          ],
+          "properties": [
+            "email",
+            "company",
+            "plan_type",
+            "seat_limit",
+            "mrr",
+            "cs_rep_owner",
+            "expansion_signal_sent_at",
+            "hs_lead_status"
+          ],
+          "limit": 500
+        }
+      },
+      "id": "w33-3",
+      "name": "Get HubSpot Plans",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        420,
+        460
+      ],
+      "credentials": {
+        "hubspotApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "HubSpot Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combineAll",
+        "options": {}
+      },
+      "id": "w33-4",
+      "name": "Merge",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        640,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const items = $input.all();\nconst usageItems = items.filter(i => i.json.account_id);\nconst contactItems = items.filter(i => i.json.properties?.email);\n\n// Build usage lookup\nconst usageMap = {};\nusageItems.forEach(i => { usageMap[i.json.account_id] = i.json; });\n\nconst signals = [];\nconst LIMITS = { starter: 5, growth: 20, professional: 50, enterprise: 200 };\nconst now = Date.now();\n\ncontactItems.forEach(contact => {\n  const p = contact.json.properties;\n  const email = p.email?.value;\n  const plan = p.plan_type?.value || 'growth';\n  const limit = LIMITS[plan] || 20;\n  const last_signal = p.expansion_signal_sent_at?.value;\n  const days_since = last_signal ? (now - new Date(last_signal).getTime()) / (1000*60*60*24) : 999;\n  if (days_since < 14) return; // Dedup: skip if signalled recently\n\n  const usage = usageMap[contact.json.id];\n  if (!usage) return;\n\n  const fired = [];\n  if (usage.seats_used >= limit * 0.85) fired.push({ type: 'seat_limit', detail: `${usage.seats_used}/${limit} seats used (${Math.round(usage.seats_used/limit*100)}%)` });\n  if (usage.new_users_this_week >= 3) fired.push({ type: 'user_growth', detail: `${usage.new_users_this_week} new users added this week` });\n  if (usage.features_enabled_this_month >= 3) fired.push({ type: 'feature_adoption', detail: `${usage.features_enabled_this_month} new features enabled this month` });\n  if (parseFloat(p.mrr?.value || 0) < 200 && usage.api_calls_month > 10000) fired.push({ type: 'high_usage_low_mrr', detail: `${usage.api_calls_month} API calls on a low-tier plan` });\n\n  if (fired.length > 0) {\n    signals.push({ json: {\n      contact_id: contact.json.id, email, company: p.company?.value,\n      plan, limit, cs_owner: p.cs_rep_owner?.value, mrr: p.mrr?.value,\n      signals: fired, primary_signal: fired[0]\n    }});\n  }\n});\n\nreturn signals;\n"
+      },
+      "id": "w33-5",
+      "name": "Signal Detection",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        860,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-signal",
+              "leftValue": "={{ $json.signals?.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "w33-6",
+      "name": "Signal Fired?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1080,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "modelId": {
+          "value": "gpt-4o",
+          "__rl": true,
+          "mode": "id"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are an expert customer success manager. Write a concise expansion proposal brief for the CS rep (NOT for the customer). The rep will use this to have a conversation with the account.\n\nBe specific about:\n1. What signal fired and what it means for this account\n2. Which upgrade or expansion option is most relevant (be specific to their plan)\n3. The suggested conversation approach (opening line + value framing)\n\nReturn ONLY JSON: {\"proposal\": \"3 paragraph rep brief\", \"suggested_opening\": \"one sentence opening the rep can use on the call or email\", \"upsell_option\": \"specific plan or add-on name\"}",
+              "role": "system"
+            },
+            {
+              "content": "=Account: {{ $json.company }} \u00b7 Current plan: {{ $json.plan }} \u00b7 MRR: ${{ $json.mrr }}\nSignal: {{ $json.primary_signal.type }}: {{ $json.primary_signal.detail }}\nAll signals: {{ $json.signals.map(s=>s.detail).join(', ') }}",
+              "role": "user"
+            }
+          ]
+        },
+        "options": {
+          "responseFormat": "json_object",
+          "temperature": 0.5
+        }
+      },
+      "id": "w33-7",
+      "name": "Generate Proposal",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        1300,
+        300
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenAI Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "task",
+        "operation": "create",
+        "subject": "=Expansion Opportunity: {{ $('Signal Detection').item.json.company }}",
+        "body": "={{ JSON.parse($json.message.content).proposal }}\\n\\nSuggested opening: {{ JSON.parse($json.message.content).suggested_opening }}",
+        "ownerId": "={{ $('Signal Detection').item.json.cs_owner }}",
+        "additionalFields": {
+          "hs_task_priority": "MEDIUM",
+          "hs_due_date": "={{ $now.plus(3,'days').toMillis() }}",
+          "hs_task_type": "CALL"
+        }
+      },
+      "id": "w33-8",
+      "name": "Create CS Task",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        1520,
+        300
+      ],
+      "credentials": {
+        "hubspotApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "HubSpot Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## 33 \u2014 Revenue Expansion Engine\n\n**Update the product API URL** in 'Pull Usage Metrics' to your actual usage endpoint.\n\n**Env variables:**\n- PRODUCT_API_KEY: your internal product/usage API token\n\n**Usage API expected response:**\n```json\n{\n  \"account_id\": \"...\",\n  \"seats_used\": 17,\n  \"new_users_this_week\": 4,\n  \"features_enabled_this_month\": 3,\n  \"api_calls_month\": 15000\n}\n```\n\n**Plan limits:** Edit the LIMITS object in Signal Detection to match your actual plan seat allocations.",
+        "height": 220,
+        "width": 400
+      },
+      "id": "w33-9",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        200,
+        540
+      ]
+    }
+  ],
+  "connections": {
+    "Daily 8am Trigger": {
+      "main": [
+        [
+          {
+            "node": "Pull Usage Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get HubSpot Plans",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pull Usage Metrics": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get HubSpot Plans": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Signal Detection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signal Detection": {
+      "main": [
+        [
+          {
+            "node": "Signal Fired?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signal Fired?": {
+      "main": [
+        [
+          {
+            "node": "Generate Proposal",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Generate Proposal": {
+      "main": [
+        [
+          {
+            "node": "Create CS Task",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "id": "workflow-33"
+}

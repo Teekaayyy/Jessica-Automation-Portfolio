@@ -1,0 +1,509 @@
+{
+  "name": "29 - Multi-Channel Churn Intervention",
+  "nodes": [
+    {
+      "parameters": {
+        "eventsUi": {
+          "eventValues": [
+            {
+              "name": "contact.propertyChange"
+            }
+          ]
+        },
+        "additionalFields": {
+          "propertyName": "churn_risk_level"
+        }
+      },
+      "id": "w29-001",
+      "name": "Churn Score Trigger",
+      "type": "n8n-nodes-base.hubspotTrigger",
+      "typeVersion": 1,
+      "position": [
+        250,
+        300
+      ],
+      "credentials": {
+        "hubspotDeveloperApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "HubSpot Developer App"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "contact",
+        "operation": "get",
+        "contactId": "={{ $json.objectId }}",
+        "additionalFields": {
+          "properties": [
+            "email",
+            "firstname",
+            "lastname",
+            "company",
+            "churn_risk_level",
+            "churn_score",
+            "intervention_active",
+            "health_score",
+            "plan",
+            "cs_rep_email",
+            "cs_rep_name",
+            "deal_value"
+          ]
+        }
+      },
+      "id": "w29-002",
+      "name": "Get Contact Details",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        470,
+        300
+      ],
+      "credentials": {
+        "hubspotApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "HubSpot Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const p = $json.properties;\nconst risk = p.churn_risk_level?.value;\nconst already_active = p.intervention_active?.value === 'true';\n\nif (already_active || !['high','critical'].includes(risk)) {\n  return { json: { skip: true, reason: already_active ? 'intervention_already_active' : 'risk_not_high_enough' } };\n}\n\nreturn {\n  json: {\n    contact_id: $json.id,\n    email: p.email?.value,\n    firstname: p.firstname?.value || 'there',\n    company: p.company?.value || 'your company',\n    risk_level: risk,\n    churn_score: p.churn_score?.value,\n    csm_email: p.cs_rep_email?.value || $env.DEFAULT_CSM_EMAIL,\n    csm_name: p.cs_rep_name?.value || 'the team',\n    deal_value: parseFloat(p.deal_value?.value || 0),\n    plan: p.plan?.value || 'standard',\n    is_critical: risk === 'critical'\n  }\n};\n"
+      },
+      "id": "w29-003",
+      "name": "Route by Tier",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        690,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "no-skip",
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "notTrue"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "w29-004",
+      "name": "Should Intervene?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        910,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "contact",
+        "operation": "update",
+        "contactId": "={{ $json.contact_id }}",
+        "updateFields": {
+          "customPropertiesUi": {
+            "customPropertiesValues": [
+              {
+                "property": "intervention_active",
+                "value": "true"
+              },
+              {
+                "property": "intervention_started_at",
+                "value": "={{ $now.toISO() }}"
+              }
+            ]
+          }
+        }
+      },
+      "id": "w29-005",
+      "name": "Set Intervention Active",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        1130,
+        300
+      ],
+      "credentials": {
+        "hubspotApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "HubSpot Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.email }}",
+        "subject": "=Quick check-in, {{ $json.firstname }}",
+        "emailType": "text",
+        "message": "=Hi {{ $json.firstname }},\n\nI wanted to reach out personally \u2014 I noticed you haven't been as active on the platform lately and wanted to make sure everything is okay.\n\nAs your dedicated account manager, it's important to me that you're getting real value from {{ $json.plan }} plan. If there's something we could be doing better or if you're running into any challenges, I'd genuinely love to hear about it.\n\nWould you have 15 minutes this week? I'd love to connect.\n\nBest,\n{{ $json.csm_name }}",
+        "options": {
+          "replyTo": "={{ $json.csm_email }}"
+        }
+      },
+      "id": "w29-006",
+      "name": "Day 0: CSM Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1350,
+        300
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Gmail CSM Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 48,
+        "unit": "hours"
+      },
+      "id": "w29-007",
+      "name": "Wait 2 Days",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1570,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.intercom.io/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.INTERCOM_ACCESS_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"message_type\": \"inapp\", \"body\": \"Hi {{ $json.firstname }} \u2014 we noticed you haven't explored some of our most powerful features yet. Want a quick guided tour? <a href='{{ $env.DEMO_URL }}'>Book your personalised walkthrough here</a>\", \"from\": {\"type\": \"admin\", \"id\": \"{{ $env.INTERCOM_ADMIN_ID }}\"}, \"to\": {\"type\": \"user\", \"email\": \"{{ $json.email }}\"}}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "w29-008",
+      "name": "Day 2: In-App Banner",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1790,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 72,
+        "unit": "hours"
+      },
+      "id": "w29-009",
+      "name": "Wait 3 More Days",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2010,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.calendly.com/scheduling_links",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.CALENDLY_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"max_event_count\": 1, \"owner\": \"{{ $env.CALENDLY_USER_URI }}\", \"owner_type\": \"EventType\"}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "w29-010",
+      "name": "Day 5: Create Booking Link",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2230,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.email }}",
+        "subject": "=I'd love to get on a call with you, {{ $json.firstname }}",
+        "emailType": "text",
+        "message": "=Hi {{ $json.firstname }},\n\nI wanted to follow up personally. I know you're busy, so I'll keep this brief.\n\nWe value having {{ $json.company }} as a customer and I want to make sure we're truly delivering on that. I'd love to schedule 30 minutes with you \u2014 no pitch, just a genuine conversation about what's working and what isn't.\n\nYou can book a time that works for you here: {{ $json.booking_url || '[Calendly link]' }}\n\nLooking forward to speaking with you.\n\n{{ $json.csm_name }}",
+        "options": {
+          "replyTo": "={{ $json.csm_email }}"
+        }
+      },
+      "id": "w29-011",
+      "name": "Day 5: Exec Call Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2450,
+        300
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Gmail CSM Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 120,
+        "unit": "hours"
+      },
+      "id": "w29-012",
+      "name": "Wait 5 More Days",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        2670,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.email }}",
+        "subject": "=A special offer for you, {{ $json.firstname }}",
+        "emailType": "text",
+        "message": "=Hi {{ $json.firstname }},\n\nI've been thinking about how we can make this work better for you.\n\nAs a valued customer, I'd like to offer you:\n{{ $json.deal_value >= 5000 ? '\u2022 Priority dedicated support channel\\n\u2022 Complimentary strategy session with our solutions team' : '\u2022 2 months free if you renew your annual plan now\\n\u2022 Access to our new premium features at no extra cost' }}\n\nThis offer is personal to you and available until {{ $now.plus(7,'days').format('DD MMM YYYY') }}.\n\nJust reply to this email to claim it.\n\n{{ $json.csm_name }}",
+        "options": {
+          "replyTo": "={{ $json.csm_email }}"
+        }
+      },
+      "id": "w29-013",
+      "name": "Day 10: Retention Offer",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2890,
+        300
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Gmail CSM Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## 29 \u2014 Multi-Channel Churn Intervention\n\n**Env variables needed:**\n- DEFAULT_CSM_EMAIL: fallback CSM email\n- INTERCOM_ACCESS_TOKEN: Intercom API token\n- INTERCOM_ADMIN_ID: your Intercom admin/agent ID\n- CALENDLY_API_KEY: Calendly API key\n- CALENDLY_USER_URI: your Calendly event type URI\n- DEMO_URL: link to your product walkthrough/demo booking\n\n**HubSpot properties needed:**\n- intervention_active (boolean)\n- intervention_started_at (date)\n- cs_rep_email (text)\n- cs_rep_name (text)\n- churn_risk_level (text: high/critical)\n\n**Critical:** Add intervention_active = false at end of sequence to allow future sequences to trigger.",
+        "height": 280,
+        "width": 420
+      },
+      "id": "w29-014",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        250,
+        540
+      ]
+    }
+  ],
+  "connections": {
+    "Churn Score Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Contact Details",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Contact Details": {
+      "main": [
+        [
+          {
+            "node": "Route by Tier",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Tier": {
+      "main": [
+        [
+          {
+            "node": "Should Intervene?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Intervene?": {
+      "main": [
+        [
+          {
+            "node": "Set Intervention Active",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Set Intervention Active": {
+      "main": [
+        [
+          {
+            "node": "Day 0: CSM Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Day 0: CSM Email": {
+      "main": [
+        [
+          {
+            "node": "Wait 2 Days",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 2 Days": {
+      "main": [
+        [
+          {
+            "node": "Day 2: In-App Banner",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Day 2: In-App Banner": {
+      "main": [
+        [
+          {
+            "node": "Wait 3 More Days",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 3 More Days": {
+      "main": [
+        [
+          {
+            "node": "Day 5: Create Booking Link",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Day 5: Create Booking Link": {
+      "main": [
+        [
+          {
+            "node": "Day 5: Exec Call Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Day 5: Exec Call Email": {
+      "main": [
+        [
+          {
+            "node": "Wait 5 More Days",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 5 More Days": {
+      "main": [
+        [
+          {
+            "node": "Day 10: Retention Offer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "id": "workflow-29",
+  "tags": [
+    {
+      "id": "1",
+      "name": "CRM"
+    },
+    {
+      "id": "5",
+      "name": "AI"
+    },
+    {
+      "id": "2",
+      "name": "Analytics"
+    }
+  ]
+}

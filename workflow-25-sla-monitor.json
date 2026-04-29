@@ -1,0 +1,417 @@
+{
+  "name": "25 - SLA Breach Monitor & Escalation",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/15 * * * *"
+            }
+          ]
+        }
+      },
+      "id": "w25-001",
+      "name": "Every 15 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://YOUR_SUBDOMAIN.zendesk.com/api/v2/tickets.json",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Basic {{ Buffer.from($env.ZENDESK_EMAIL + '/token:' + $env.ZENDESK_API_TOKEN).toString('base64') }}"
+            }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "status",
+              "value": "open,pending"
+            },
+            {
+              "name": "sort_by",
+              "value": "created_at"
+            },
+            {
+              "name": "sort_order",
+              "value": "asc"
+            },
+            {
+              "name": "per_page",
+              "value": "100"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "w25-002",
+      "name": "Fetch Open Tickets",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        470,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// SLA targets by priority (in minutes)\nconst SLA_TARGETS = {\n  critical: 120,   // 2 hours\n  high: 480,       // 8 hours\n  normal: 2880,    // 48 hours\n  low: 10080       // 7 days\n};\nconst WARNING_THRESHOLD = 0.7; // Alert at 70% of SLA window\n\nconst BUSINESS_HOURS_START = 9; // 9am\nconst BUSINESS_HOURS_END = 18;  // 6pm\n\nfunction businessMinutesElapsed(createdAt) {\n  const now = new Date();\n  const created = new Date(createdAt);\n  let elapsed = 0;\n  const cursor = new Date(created);\n  \n  while (cursor < now) {\n    const hour = cursor.getHours();\n    const day = cursor.getDay(); // 0=Sun, 6=Sat\n    const isBusinessDay = day >= 1 && day <= 5;\n    const isBusinessHour = hour >= BUSINESS_HOURS_START && hour < BUSINESS_HOURS_END;\n    \n    if (isBusinessDay && isBusinessHour) elapsed++;\n    cursor.setMinutes(cursor.getMinutes() + 1);\n    \n    // Optimisation: skip non-business blocks\n    if (!isBusinessDay || hour < BUSINESS_HOURS_START) {\n      cursor.setHours(BUSINESS_HOURS_START, 0, 0);\n      if (!isBusinessDay) cursor.setDate(cursor.getDate() + (day === 0 ? 1 : day === 6 ? 2 : 1));\n    } else if (hour >= BUSINESS_HOURS_END) {\n      cursor.setDate(cursor.getDate() + 1);\n      cursor.setHours(BUSINESS_HOURS_START, 0, 0);\n    }\n  }\n  return elapsed;\n}\n\nconst tickets = $input.first().json.tickets || [];\n\nreturn tickets.map(ticket => {\n  const priority = ticket.priority || 'normal';\n  const sla_target = SLA_TARGETS[priority] || SLA_TARGETS.normal;\n  const elapsed = businessMinutesElapsed(ticket.created_at);\n  const pct = elapsed / sla_target;\n  \n  let status = 'on_track';\n  if (elapsed >= sla_target) status = 'breached';\n  else if (pct >= WARNING_THRESHOLD) status = 'at_risk';\n  \n  return {\n    json: {\n      ticket_id: ticket.id,\n      subject: ticket.subject,\n      priority,\n      status,\n      elapsed_minutes: elapsed,\n      sla_target_minutes: sla_target,\n      pct_consumed: Math.round(pct * 100),\n      assignee_id: ticket.assignee_id,\n      created_at: ticket.created_at,\n      requester_id: ticket.requester_id\n    }\n  };\n}).filter(t => t.json.status !== 'on_track');\n"
+      },
+      "id": "w25-003",
+      "name": "SLA Calculator",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        690,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "needs-action",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "on_track",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "w25-004",
+      "name": "Needs Escalation?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        910,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.priority + '_' + $json.status }}",
+                    "rightValue": "critical_breached",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "p1_breach"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.status }}",
+                    "rightValue": "breached",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "breach"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.status }}",
+                    "rightValue": "at_risk",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "warning"
+            }
+          ]
+        }
+      },
+      "id": "w25-005",
+      "name": "Route by Severity",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        1130,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": {
+          "value": "#support-p1-critical",
+          "__rl": true,
+          "mode": "name"
+        },
+        "text": "\ud83d\udea8 *P1 SLA BREACH \u2014 IMMEDIATE ACTION REQUIRED*\n\n*Ticket #{{ $json.ticket_id }}:* {{ $json.subject }}\n*SLA Consumed:* {{ $json.pct_consumed }}% ({{ $json.elapsed_minutes }} of {{ $json.sla_target_minutes }} minutes)\n*Priority:* CRITICAL\n\n@here \u2014 This ticket is in breach. Respond NOW.\n\nhttps://YOUR_SUBDOMAIN.zendesk.com/agent/tickets/{{ $json.ticket_id }}",
+        "otherOptions": {
+          "mrkdwn": true
+        }
+      },
+      "id": "w25-006",
+      "name": "P1 Breach Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1350,
+        120
+      ],
+      "credentials": {
+        "slackApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Slack Workspace"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": {
+          "value": "#support-escalations",
+          "__rl": true,
+          "mode": "name"
+        },
+        "text": "\ud83d\udd34 *SLA BREACH*\n\n*Ticket #{{ $json.ticket_id }}:* {{ $json.subject }}\n*Priority:* {{ $json.priority?.toUpperCase() }}\n*SLA Consumed:* {{ $json.pct_consumed }}% \u2014 BREACHED\n\nhttps://YOUR_SUBDOMAIN.zendesk.com/agent/tickets/{{ $json.ticket_id }}",
+        "otherOptions": {
+          "mrkdwn": true
+        }
+      },
+      "id": "w25-007",
+      "name": "Breach Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1350,
+        280
+      ],
+      "credentials": {
+        "slackApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Slack Workspace"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": {
+          "value": "#support-team",
+          "__rl": true,
+          "mode": "name"
+        },
+        "text": "\u26a0\ufe0f *SLA Warning \u2014 {{ $json.pct_consumed }}% consumed*\n\n*Ticket #{{ $json.ticket_id }}:* {{ $json.subject }}\n*Priority:* {{ $json.priority }}\n*Time Left:* {{ Math.round(($json.sla_target_minutes - $json.elapsed_minutes) / 60) }} hours\n\nhttps://YOUR_SUBDOMAIN.zendesk.com/agent/tickets/{{ $json.ticket_id }}",
+        "otherOptions": {
+          "mrkdwn": true
+        }
+      },
+      "id": "w25-008",
+      "name": "Warning Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1350,
+        440
+      ],
+      "credentials": {
+        "slackApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Slack Workspace"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://events.pagerduty.com/v2/enqueue",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"routing_key\": \"{{ $env.PAGERDUTY_ROUTING_KEY }}\", \"event_action\": \"trigger\", \"payload\": {\"summary\": \"P1 SLA Breach: Ticket #{{ $json.ticket_id }} - {{ $json.subject }}\", \"severity\": \"critical\", \"source\": \"Support SLA Monitor\", \"custom_details\": {\"ticket_id\": \"{{ $json.ticket_id }}\", \"sla_consumed\": \"{{ $json.pct_consumed }}%\"}}}",
+        "options": {}
+      },
+      "id": "w25-009",
+      "name": "PagerDuty Page",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1570,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 25 \u2014 SLA Breach Monitor & Escalation\n\n**Env variables needed:**\n- ZENDESK_EMAIL: your Zendesk admin email\n- ZENDESK_API_TOKEN: from Zendesk Admin > API\n- PAGERDUTY_ROUTING_KEY: from PagerDuty service integration\n\n**Update:** Replace YOUR_SUBDOMAIN in both HTTP nodes with your Zendesk subdomain.\n\n**SLA targets:** Edit the SLA_TARGETS object in the Code node to match your actual SLA commitments.\n\n**Deduplication:** Add a HubSpot or Redis check before the Slack nodes to prevent re-alerting on the same ticket every 15 minutes.",
+        "height": 240,
+        "width": 420
+      },
+      "id": "w25-010",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        250,
+        540
+      ]
+    }
+  ],
+  "connections": {
+    "Every 15 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Fetch Open Tickets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Open Tickets": {
+      "main": [
+        [
+          {
+            "node": "SLA Calculator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SLA Calculator": {
+      "main": [
+        [
+          {
+            "node": "Needs Escalation?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs Escalation?": {
+      "main": [
+        [
+          {
+            "node": "Route by Severity",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Route by Severity": {
+      "main": [
+        [
+          {
+            "node": "P1 Breach Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Breach Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Warning Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "P1 Breach Alert": {
+      "main": [
+        [
+          {
+            "node": "PagerDuty Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "id": "workflow-25",
+  "tags": [
+    {
+      "id": "1",
+      "name": "CRM"
+    },
+    {
+      "id": "5",
+      "name": "AI"
+    }
+  ]
+}

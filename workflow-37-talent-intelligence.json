@@ -1,0 +1,347 @@
+{
+  "name": "37 - AI Talent Market Intelligence Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 1 * *"
+            }
+          ]
+        }
+      },
+      "id": "w37-1",
+      "name": "1st of Month Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://jsearch.p.rapidapi.com/search",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-RapidAPI-Key",
+              "value": "={{ $env.RAPIDAPI_KEY }}"
+            },
+            {
+              "name": "X-RapidAPI-Host",
+              "value": "jsearch.p.rapidapi.com"
+            }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "query",
+              "value": "={{ $env.COMPETITOR_NAMES }}"
+            },
+            {
+              "name": "date_posted",
+              "value": "month"
+            },
+            {
+              "name": "num_pages",
+              "value": "5"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "w37-2",
+      "name": "Competitor Hiring",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        420,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://jsearch.p.rapidapi.com/search",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-RapidAPI-Key",
+              "value": "={{ $env.RAPIDAPI_KEY }}"
+            },
+            {
+              "name": "X-RapidAPI-Host",
+              "value": "jsearch.p.rapidapi.com"
+            }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "query",
+              "value": "={{ $env.TARGET_ROLES }}"
+            },
+            {
+              "name": "date_posted",
+              "value": "month"
+            },
+            {
+              "name": "num_pages",
+              "value": "3"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "w37-3",
+      "name": "Role Skill Demand",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        420,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "combineAll",
+        "options": {}
+      },
+      "id": "w37-4",
+      "name": "Merge",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        640,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const items = $input.all();\nconst competitor_jobs = (items[0]?.json?.data || []);\nconst role_jobs = (items[1]?.json?.data || []);\n\n// Competitor analysis\nconst byCompany = {};\ncompetitor_jobs.forEach(j => {\n  const co = j.employer_name || 'Unknown';\n  if (!byCompany[co]) byCompany[co] = { company: co, total: 0, by_dept: {} };\n  byCompany[co].total++;\n  const dept = j.job_title?.toLowerCase().includes('engineer') ? 'Engineering'\n    : j.job_title?.toLowerCase().includes('sales') ? 'Sales'\n    : j.job_title?.toLowerCase().includes('market') ? 'Marketing'\n    : j.job_title?.toLowerCase().includes('data') ? 'Data/Analytics'\n    : 'Other';\n  byCompany[co].by_dept[dept] = (byCompany[co].by_dept[dept] || 0) + 1;\n});\nconst competitor_summary = Object.values(byCompany).sort((a,b) => b.total-a.total);\n\n// Skill demand analysis\nconst SKILLS_TAXONOMY = ['Python','SQL','React','TypeScript','Kubernetes','AWS','Terraform','dbt','Looker','HubSpot','Salesforce','n8n','Zapier','GPT','LLM','AI','Machine Learning','Analytics','Tableau','Power BI'];\nconst skill_counts = {};\nrole_jobs.forEach(j => {\n  const desc = (j.job_description || '').toLowerCase();\n  SKILLS_TAXONOMY.forEach(skill => {\n    if (desc.includes(skill.toLowerCase())) skill_counts[skill] = (skill_counts[skill]||0)+1;\n  });\n});\nconst skill_demand = Object.entries(skill_counts).sort((a,b) => b[1]-a[1]).slice(0,15).map(([k,v]) => ({skill: k, count: v, pct: Math.round(v/role_jobs.length*100)}));\n\nreturn [{ json: { competitor_summary, skill_demand, competitor_total: competitor_jobs.length, role_jobs_analysed: role_jobs.length, month: new Date().toLocaleDateString('en-GB',{month:'long',year:'numeric'}) } }];\n"
+      },
+      "id": "w37-5",
+      "name": "Aggregate Intel",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        860,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "value": "REPLACE_WITH_SHEET_ID",
+          "__rl": true,
+          "mode": "id"
+        },
+        "sheetName": {
+          "value": "Talent History",
+          "__rl": true,
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Month": "={{ $json.month }}",
+            "Competitor_Total": "={{ $json.competitor_total }}",
+            "Top_Skills": "={{ $json.skill_demand.slice(0,5).map(s=>s.skill).join(', ') }}",
+            "Analysed_Jobs": "={{ $json.role_jobs_analysed }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "w37-6",
+      "name": "Log History",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1080,
+        460
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "modelId": {
+          "value": "gpt-4o",
+          "__rl": true,
+          "mode": "id"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are a Head of People & Talent with deep market expertise. Write a concise monthly talent intelligence brief for HR and leadership.\n\nStructure (4 sections, use markdown headers):\n## Market Overview \u2014 one paragraph on the overall talent market signal\n## Competitor Hiring Signals \u2014 what competitor hiring velocity tells us about their strategic direction\n## Skills in Demand \u2014 the top skills the market is prioritising and what it means for our hiring\n## 3 Hiring Recommendations \u2014 specific, actionable recommendations based on this month's data\n\nBe specific and data-driven. Cite numbers from the data.",
+              "role": "system"
+            },
+            {
+              "content": "=Month: {{ $json.month }}\nAnalysed {{ $json.competitor_total }} competitor job postings and {{ $json.role_jobs_analysed }} target role postings.\n\nCompetitor hiring activity:\n{{ $json.competitor_summary.slice(0,5).map(c => c.company + ': ' + c.total + ' postings (' + Object.entries(c.by_dept).map(([d,n])=>n+' '+d).join(', ') + ')').join('\\n') }}\n\nTop skills in demand:\n{{ $json.skill_demand.map(s => s.skill + ': ' + s.count + ' postings (' + s.pct + '%)').join('\\n') }}",
+              "role": "user"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.4
+        }
+      },
+      "id": "w37-7",
+      "name": "Generate Brief",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        1080,
+        300
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenAI Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $env.HR_LEADERSHIP_LIST }}",
+        "subject": "=Monthly Talent Intelligence \u2014 {{ $('Aggregate Intel').first().json.month }}",
+        "emailType": "html",
+        "message": "=<html><body style='font-family:Arial,sans-serif;max-width:680px;'><h2 style='color:#f97316;'>Talent Market Intelligence</h2><p style='color:#888;'>{{ $('Aggregate Intel').first().json.month }} \u00b7 {{ $('Aggregate Intel').first().json.competitor_total }} postings analysed</p><hr/>{{ $json.message.content.replace(/\\n/g,'<br>').replace(/## /g,'<h3>') }}</body></html>",
+        "options": {}
+      },
+      "id": "w37-8",
+      "name": "Send to HR",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1300,
+        300
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Gmail Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## 37 \u2014 Talent Intelligence Pipeline\n\n**Env variables needed:**\n- RAPIDAPI_KEY: for JSearch job board data\n- COMPETITOR_NAMES: e.g. 'Salesforce OR HubSpot OR Pipedrive'\n- TARGET_ROLES: e.g. 'Head of Engineering OR Senior Engineer OR Data Engineer'\n- HR_LEADERSHIP_LIST: distribution email list\n\n**Salary data:** Add a 3rd parallel branch fetching salary data from levels.fyi API or Glassdoor to enrich the brief with compensation benchmarking.",
+        "height": 200,
+        "width": 380
+      },
+      "id": "w37-9",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        200,
+        540
+      ]
+    }
+  ],
+  "connections": {
+    "1st of Month Trigger": {
+      "main": [
+        [
+          {
+            "node": "Competitor Hiring",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Role Skill Demand",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Competitor Hiring": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Role Skill Demand": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Intel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Intel": {
+      "main": [
+        [
+          {
+            "node": "Generate Brief",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Brief": {
+      "main": [
+        [
+          {
+            "node": "Send to HR",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "id": "workflow-37"
+}

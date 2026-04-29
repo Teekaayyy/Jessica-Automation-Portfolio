@@ -1,0 +1,580 @@
+{
+  "name": "30 - RevOps Intelligence Dashboard",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 7 * * 1"
+            }
+          ]
+        }
+      },
+      "id": "w30-001",
+      "name": "Monday 7am Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.hubapi.com/crm/v3/objects/deals",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.HUBSPOT_API_TOKEN }}"
+            }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "limit",
+              "value": "100"
+            },
+            {
+              "name": "properties",
+              "value": "dealname,amount,dealstage,pipeline,closedate,hubspot_owner_id"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "w30-002",
+      "name": "Pull HubSpot Pipeline",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        470,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.stripe.com/v1/balance/history",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.STRIPE_SECRET_KEY }}"
+            }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "created[gte]",
+              "value": "={{ Math.floor(new Date(new Date().setDate(new Date().getDate()-7)).getTime()/1000) }}"
+            },
+            {
+              "name": "limit",
+              "value": "100"
+            },
+            {
+              "name": "type",
+              "value": "payment"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "w30-003",
+      "name": "Pull Stripe Revenue",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        470,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.intercom.io/conversations/search",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.INTERCOM_ACCESS_TOKEN }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"query\": {\"operator\": \"AND\", \"value\": [{\"field\": \"created_at\", \"operator\": \">\", \"value\": {{ Math.floor(new Date(new Date().setDate(new Date().getDate()-7)).getTime()/1000) }}}]}, \"pagination\": {\"per_page\": 150}}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "w30-004",
+      "name": "Pull Intercom Support",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        470,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://data.mixpanel.com/api/2.0/insights",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Basic {{ Buffer.from($env.MIXPANEL_SERVICE_ACCOUNT + ':' + $env.MIXPANEL_SECRET).toString('base64') }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"bookmark_id\": \"{{ $env.MIXPANEL_DASHBOARD_ID }}\",\"from_date\":\"{{ $now.minus(7,'days').format('YYYY-MM-DD') }}\",\"to_date\":\"{{ $now.format('YYYY-MM-DD') }}\"}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "w30-005",
+      "name": "Pull Mixpanel Product",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        470,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://analyticsdata.googleapis.com/v1beta/properties/REPLACE_GA4_PROPERTY_ID:runReport",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer REPLACE_GA4_TOKEN"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"dimensions\":[{\"name\":\"sessionSource\"},{\"name\":\"sessionMedium\"}],\"metrics\":[{\"name\":\"sessions\"},{\"name\":\"conversions\"},{\"name\":\"newUsers\"}],\"dateRanges\":[{\"startDate\":\"7daysAgo\",\"endDate\":\"today\"}]}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "w30-006",
+      "name": "Pull GA4 Marketing",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        470,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "combineAll",
+        "options": {}
+      },
+      "id": "w30-007",
+      "name": "Merge All Sources",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        690,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const items = $input.all();\nconst errors = [];\n\n// \u2500\u2500 HubSpot Pipeline Metrics \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nlet open_deals = 0, pipeline_value = 0, deals_by_stage = {};\ntry {\n  const hs = items.find(i => i.json.results);\n  const deals = hs?.json?.results || [];\n  open_deals = deals.filter(d => !['closedwon','closedlost'].includes(d.properties?.dealstage?.value)).length;\n  pipeline_value = deals.reduce((s,d) => s + parseFloat(d.properties?.amount?.value || 0), 0);\n  deals.forEach(d => {\n    const stage = d.properties?.dealstage?.value || 'unknown';\n    deals_by_stage[stage] = (deals_by_stage[stage] || 0) + 1;\n  });\n} catch(e) { errors.push('hubspot: ' + e.message); }\n\n// \u2500\u2500 Stripe Revenue Metrics \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nlet revenue_week = 0, transactions_week = 0;\ntry {\n  const stripe = items.find(i => i.json.data?.length && i.json.data[0]?.amount);\n  const charges = stripe?.json?.data || [];\n  transactions_week = charges.length;\n  revenue_week = charges.reduce((s,c) => s + (c.net || c.amount)/100, 0);\n} catch(e) { errors.push('stripe: ' + e.message); }\n\n// \u2500\u2500 Intercom Support Metrics \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nlet new_conversations = 0, avg_first_response_mins = 0;\ntry {\n  const intercom = items.find(i => i.json.conversations);\n  const convos = intercom?.json?.conversations || [];\n  new_conversations = convos.length;\n  const responded = convos.filter(c => c.statistics?.first_response_time);\n  avg_first_response_mins = responded.length ? Math.round(responded.reduce((s,c) => s + (c.statistics.first_response_time/60), 0) / responded.length) : 0;\n} catch(e) { errors.push('intercom: ' + e.message); }\n\n// \u2500\u2500 GA4 Marketing Metrics \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nlet sessions = 0, conversions = 0, new_users = 0;\ntry {\n  const ga4 = items.find(i => i.json.rows);\n  (ga4?.json?.rows || []).forEach(row => {\n    sessions += parseInt(row.metricValues[0].value || 0);\n    conversions += parseInt(row.metricValues[1].value || 0);\n    new_users += parseInt(row.metricValues[2].value || 0);\n  });\n} catch(e) { errors.push('ga4: ' + e.message); }\n\nconst now = new Date();\nconst metrics = {\n  // Timestamps\n  week_ending: now.toLocaleDateString('en-GB'),\n  generated_at: now.toISOString(),\n  // Pipeline\n  open_deals, pipeline_value: pipeline_value.toFixed(0),\n  // Revenue\n  revenue_week: revenue_week.toFixed(0), transactions_week,\n  // Support\n  new_conversations, avg_first_response_mins,\n  // Marketing\n  sessions_week: sessions, conversions_week: conversions, new_users_week: new_users,\n  conversion_rate: sessions > 0 ? ((conversions/sessions)*100).toFixed(2) : 0,\n  // Health\n  source_errors: errors, has_errors: errors.length > 0\n};\n\nreturn [{ json: metrics }];\n"
+      },
+      "id": "w30-008",
+      "name": "Aggregate Metrics",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        910,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "value": "REPLACE_WITH_SHEET_ID",
+          "__rl": true,
+          "mode": "id"
+        },
+        "sheetName": {
+          "value": "RevOps Dashboard",
+          "__rl": true,
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "row_id": "LIVE",
+            "week_ending": "={{ $json.week_ending }}",
+            "open_deals": "={{ $json.open_deals }}",
+            "pipeline_value": "={{ $json.pipeline_value }}",
+            "revenue_week": "={{ $json.revenue_week }}",
+            "transactions": "={{ $json.transactions_week }}",
+            "support_volume": "={{ $json.new_conversations }}",
+            "avg_response_mins": "={{ $json.avg_first_response_mins }}",
+            "sessions": "={{ $json.sessions_week }}",
+            "conversions": "={{ $json.conversions_week }}",
+            "new_users": "={{ $json.new_users_week }}",
+            "conversion_rate": "={{ $json.conversion_rate }}",
+            "updated_at": "={{ $json.generated_at }}"
+          }
+        },
+        "where": {
+          "values": [
+            {
+              "lookupColumn": "row_id",
+              "lookupValue": "LIVE"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "w30-009",
+      "name": "Update Live Dashboard",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1130,
+        300
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "value": "REPLACE_WITH_SHEET_ID",
+          "__rl": true,
+          "mode": "id"
+        },
+        "sheetName": {
+          "value": "Weekly History",
+          "__rl": true,
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "week_ending": "={{ $json.week_ending }}",
+            "open_deals": "={{ $json.open_deals }}",
+            "pipeline_value": "={{ $json.pipeline_value }}",
+            "revenue_week": "={{ $json.revenue_week }}",
+            "sessions": "={{ $json.sessions_week }}",
+            "conversions": "={{ $json.conversions_week }}",
+            "new_conversations": "={{ $json.new_conversations }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "w30-010",
+      "name": "Append to History",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1130,
+        480
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "modelId": {
+          "value": "gpt-4o",
+          "__rl": true,
+          "mode": "id"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are the Chief Revenue Officer writing a concise weekly business review. Be specific, data-driven, and decisive. Leadership does not have time for vague commentary \u2014 they need to know what happened, what it means, and what to do.\n\nStructure (4 short paragraphs):\n1. PERFORMANCE HEADLINE: One sentence capturing the week's most important story.\n2. GREEN LIGHTS: What improved and why it matters for the business.\n3. AMBER FLAGS: What needs attention and what's the likely cause.\n4. THIS WEEK'S PRIORITIES: 2-3 specific actions the team should take based on this data.\n\nTone: Direct, confident, no corporate filler.",
+              "role": "system"
+            },
+            {
+              "content": "=Week ending: {{ $json.week_ending }}\n\nMetrics:\n- Pipeline: {{ $json.open_deals }} open deals, \u00a3{{ parseInt($json.pipeline_value).toLocaleString() }} total value\n- Revenue: \u00a3{{ parseInt($json.revenue_week).toLocaleString() }} this week ({{ $json.transactions_week }} transactions)\n- Support: {{ $json.new_conversations }} new conversations, {{ $json.avg_first_response_mins }} min avg first response\n- Marketing: {{ $json.sessions_week }} sessions, {{ $json.conversions_week }} conversions, {{ $json.conversion_rate }}% CVR, {{ $json.new_users_week }} new users",
+              "role": "user"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.4
+        }
+      },
+      "id": "w30-011",
+      "name": "Generate AI Digest",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        1350,
+        360
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenAI Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $env.LEADERSHIP_LIST }}",
+        "subject": "=Weekly RevOps Brief \u2014 {{ $('Aggregate Metrics').first().json.week_ending }}",
+        "emailType": "html",
+        "message": "=<html><body style=\"font-family:Arial,sans-serif;max-width:700px;margin:0 auto;color:#333;\">\n<h2 style=\"color:#f97316;\">\ud83d\udcca Weekly RevOps Brief</h2>\n<p style=\"color:#888;\">Week ending {{ $('Aggregate Metrics').first().json.week_ending }} \u00b7 Auto-generated</p>\n<table style=\"width:100%;border-collapse:collapse;margin:20px 0;\">\n<tr style=\"background:#f5f5f5;\"><th style=\"padding:10px;text-align:left;\">Metric</th><th style=\"padding:10px;text-align:right;\">This Week</th></tr>\n<tr><td style=\"padding:8px;\">Open Deals</td><td style=\"padding:8px;text-align:right;\">{{ $('Aggregate Metrics').first().json.open_deals }}</td></tr>\n<tr style=\"background:#fafafa;\"><td style=\"padding:8px;\">Pipeline Value</td><td style=\"padding:8px;text-align:right;\">\u00a3{{ parseInt($('Aggregate Metrics').first().json.pipeline_value).toLocaleString() }}</td></tr>\n<tr><td style=\"padding:8px;\">Revenue</td><td style=\"padding:8px;text-align:right;\">\u00a3{{ parseInt($('Aggregate Metrics').first().json.revenue_week).toLocaleString() }}</td></tr>\n<tr style=\"background:#fafafa;\"><td style=\"padding:8px;\">Sessions</td><td style=\"padding:8px;text-align:right;\">{{ $('Aggregate Metrics').first().json.sessions_week }}</td></tr>\n<tr><td style=\"padding:8px;\">Conversions</td><td style=\"padding:8px;text-align:right;\">{{ $('Aggregate Metrics').first().json.conversions_week }} ({{ $('Aggregate Metrics').first().json.conversion_rate }}%)</td></tr>\n<tr style=\"background:#fafafa;\"><td style=\"padding:8px;\">Support Volume</td><td style=\"padding:8px;text-align:right;\">{{ $('Aggregate Metrics').first().json.new_conversations }} conversations</td></tr>\n</table>\n<hr/>\n<h3>Executive Summary</h3>\n<div style=\"line-height:1.7;font-size:15px;\">{{ $json.message.content.replace(/\\n/g,'<br>') }}</div>\n<hr/>\n<p style=\"color:#aaa;font-size:12px;\">RevOps Intelligence Dashboard \u00b7 Auto-generated weekly</p>\n</body></html>",
+        "options": {}
+      },
+      "id": "w30-012",
+      "name": "Email Leadership Brief",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1570,
+        360
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Gmail Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## 30 \u2014 RevOps Intelligence Dashboard\n\n**Env variables needed:**\n- HUBSPOT_API_TOKEN: HubSpot private app token\n- STRIPE_SECRET_KEY: Stripe secret key\n- INTERCOM_ACCESS_TOKEN: Intercom API token\n- MIXPANEL_SERVICE_ACCOUNT + MIXPANEL_SECRET\n- LEADERSHIP_LIST: comma-separated emails\n\n**GA4 setup:** Replace REPLACE_GA4_PROPERTY_ID and REPLACE_GA4_TOKEN with your actual property ID and service account bearer token.\n\n**Google Sheets setup:**\n1. Create 'RevOps Dashboard' tab with a row where row_id='LIVE'\n2. Create 'Weekly History' tab for historical logging\n3. Connect Looker Studio to the sheet as a live data source",
+        "height": 260,
+        "width": 420
+      },
+      "id": "w30-013",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        250,
+        560
+      ]
+    }
+  ],
+  "connections": {
+    "Monday 7am Trigger": {
+      "main": [
+        [
+          {
+            "node": "Pull HubSpot Pipeline",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Pull Stripe Revenue",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Pull Intercom Support",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Pull Mixpanel Product",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Pull GA4 Marketing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pull HubSpot Pipeline": {
+      "main": [
+        [
+          {
+            "node": "Merge All Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pull Stripe Revenue": {
+      "main": [
+        [
+          {
+            "node": "Merge All Sources",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Pull Intercom Support": {
+      "main": [
+        [
+          {
+            "node": "Merge All Sources",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Pull Mixpanel Product": {
+      "main": [
+        [
+          {
+            "node": "Merge All Sources",
+            "type": "main",
+            "index": 3
+          }
+        ]
+      ]
+    },
+    "Pull GA4 Marketing": {
+      "main": [
+        [
+          {
+            "node": "Merge All Sources",
+            "type": "main",
+            "index": 4
+          }
+        ]
+      ]
+    },
+    "Merge All Sources": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Metrics": {
+      "main": [
+        [
+          {
+            "node": "Update Live Dashboard",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Append to History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Live Dashboard": {
+      "main": [
+        [
+          {
+            "node": "Generate AI Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate AI Digest": {
+      "main": [
+        [
+          {
+            "node": "Email Leadership Brief",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "id": "workflow-30",
+  "tags": [
+    {
+      "id": "2",
+      "name": "Analytics"
+    },
+    {
+      "id": "4",
+      "name": "Data"
+    }
+  ]
+}

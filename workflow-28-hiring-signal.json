@@ -1,0 +1,366 @@
+{
+  "name": "28 - Hiring Signal \u2192 Outreach Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 7 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "w28-001",
+      "name": "Daily 7am Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://jsearch.p.rapidapi.com/search",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-RapidAPI-Key",
+              "value": "={{ $env.RAPIDAPI_KEY }}"
+            },
+            {
+              "name": "X-RapidAPI-Host",
+              "value": "jsearch.p.rapidapi.com"
+            }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "query",
+              "value": "Head of Revenue Operations OR VP Sales Operations OR Director of Growth OR Head of Marketing Analytics OR VP Customer Success"
+            },
+            {
+              "name": "date_posted",
+              "value": "today"
+            },
+            {
+              "name": "num_pages",
+              "value": "3"
+            },
+            {
+              "name": "employment_types",
+              "value": "FULLTIME"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "w28-002",
+      "name": "Query Job Boards",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        470,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const jobs = $input.first().json?.data || [];\n\n// Signal category mapping\nconst signal_map = {\n  revops: ['revenue operations', 'revops', 'sales operations'],\n  growth: ['head of growth', 'vp growth', 'growth marketing'],\n  analytics: ['marketing analytics', 'data analytics', 'business intelligence', 'revenue analytics'],\n  cs_scale: ['customer success', 'customer experience', 'cs operations']\n};\n\nfunction getSignalCategory(title) {\n  const lower = title.toLowerCase();\n  for (const [cat, keywords] of Object.entries(signal_map)) {\n    if (keywords.some(k => lower.includes(k))) return cat;\n  }\n  return null;\n}\n\n// Filter to ICP companies and map signal categories\nconst filtered = jobs\n  .map(job => ({\n    company_name: job.employer_name,\n    company_domain: job.employer_website?.replace(/https?:\\/\\/(www\\.)?/, '').split('/')[0],\n    job_title: job.job_title,\n    job_url: job.job_apply_link,\n    signal_category: getSignalCategory(job.job_title || ''),\n    posted_at: job.job_posted_at_datetime_utc,\n    location: job.job_city + ', ' + job.job_country\n  }))\n  .filter(j => j.signal_category && j.company_domain);\n\nreturn filtered.map(j => ({ json: j }));\n"
+      },
+      "id": "w28-003",
+      "name": "Filter Intent Signals",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        690,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.apollo.io/v1/organizations/enrich",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"api_key\": \"{{ $env.APOLLO_API_KEY }}\", \"domain\": \"{{ $json.company_domain }}\"}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "w28-004",
+      "name": "Enrich Company",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        910,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const org = $json.organization || {};\nconst job = $('Filter Intent Signals').item.json;\n\n// ICP validation\nconst employees = org.estimated_num_employees || 0;\nconst icp_fit = employees >= 30 && employees <= 1000;\nif (!icp_fit) return { json: { skip: true } };\n\nreturn {\n  json: {\n    company_name: job.company_name,\n    company_domain: job.company_domain,\n    company_size: employees,\n    industry: org.industry || '',\n    tech_stack: (org.technologies || []).slice(0,8).map(t=>t.name).join(', '),\n    funding: org.funding_events?.[0]?.currency_raised_in_millions ? `$${org.funding_events[0].currency_raised_in_millions}M` : '',\n    job_title: job.job_title,\n    job_url: job.job_url,\n    signal_category: job.signal_category,\n    posted_at: job.posted_at\n  }\n};\n"
+      },
+      "id": "w28-005",
+      "name": "Validate ICP Fit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1130,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.apollo.io/v1/mixed_people/search",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"api_key\": \"{{ $env.APOLLO_API_KEY }}\", \"organization_domains\": [\"{{ $json.company_domain }}\"], \"person_titles\": [\"CEO\", \"Founder\", \"CRO\", \"VP Revenue\", \"Head of Revenue\", \"VP Sales\"], \"page\": 1, \"per_page\": 1}",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "w28-006",
+      "name": "Find Decision Maker",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1350,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "modelId": {
+          "value": "gpt-4o",
+          "__rl": true,
+          "mode": "id"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are an expert B2B outbound sales copywriter. Write a personalised cold email that:\n- Opens with a specific reference to the role they are hiring for and why it matters\n- Connects our product naturally to what that hire signals about their business direction\n- Is 100-140 words maximum\n- Feels like it came from a thoughtful peer, not a salesperson\n- Has one clear, low-friction CTA (not 'jump on a call' \u2014 try 'worth a quick conversation?')\n\nReturn ONLY JSON: {\"subject\": \"...\", \"body\": \"...\"}",
+              "role": "system"
+            },
+            {
+              "content": "=Company: {{ $('Validate ICP Fit').item.json.company_name }} ({{ $('Validate ICP Fit').item.json.company_size }} employees)\nThey are hiring: {{ $('Validate ICP Fit').item.json.job_title }}\nSignal category: {{ $('Validate ICP Fit').item.json.signal_category }}\nTech stack: {{ $('Validate ICP Fit').item.json.tech_stack }}\nFunding: {{ $('Validate ICP Fit').item.json.funding }}\nContact: {{ $json.people?.[0]?.first_name || 'there' }}, {{ $json.people?.[0]?.title || 'leadership' }}",
+              "role": "user"
+            }
+          ]
+        },
+        "options": {
+          "responseFormat": "json_object",
+          "temperature": 0.7
+        }
+      },
+      "id": "w28-007",
+      "name": "Generate Outreach",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        1570,
+        300
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenAI Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "contact",
+        "operation": "create",
+        "additionalFields": {
+          "email": "={{ $('Find Decision Maker').item.json.people?.[0]?.email }}",
+          "firstname": "={{ $('Find Decision Maker').item.json.people?.[0]?.first_name }}",
+          "lastname": "={{ $('Find Decision Maker').item.json.people?.[0]?.last_name }}",
+          "jobtitle": "={{ $('Find Decision Maker').item.json.people?.[0]?.title }}",
+          "company": "={{ $('Validate ICP Fit').item.json.company_name }}",
+          "leadsource": "Hiring Signal Prospecting",
+          "customPropertiesUi": {
+            "customPropertiesValues": [
+              {
+                "property": "intent_signal",
+                "value": "={{ $('Validate ICP Fit').item.json.job_title }}"
+              },
+              {
+                "property": "signal_category",
+                "value": "={{ $('Validate ICP Fit').item.json.signal_category }}"
+              },
+              {
+                "property": "outreach_draft",
+                "value": "={{ JSON.parse($json.message.content).body }}"
+              }
+            ]
+          }
+        }
+      },
+      "id": "w28-008",
+      "name": "Create HubSpot Lead",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        1790,
+        300
+      ],
+      "credentials": {
+        "hubspotApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "HubSpot Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## 28 \u2014 Hiring Signal \u2192 Outreach Pipeline\n\n**Env variables needed:**\n- RAPIDAPI_KEY: for job board data (RapidAPI JSearch)\n- APOLLO_API_KEY: for company + contact enrichment\n\n**Customise:** Update the signal_map in 'Filter Intent Signals' to map to role titles that signal buying intent for YOUR product specifically.\n\n**Review gate:** The generated outreach is saved as a HubSpot contact property 'outreach_draft' \u2014 reps review and send manually. Do NOT auto-send without human review.\n\n**Apollo limits:** Free tier has limited enrichment calls. Consider Apollo paid plan for high-volume use.",
+        "height": 240,
+        "width": 420
+      },
+      "id": "w28-009",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        250,
+        540
+      ]
+    }
+  ],
+  "connections": {
+    "Daily 7am Trigger": {
+      "main": [
+        [
+          {
+            "node": "Query Job Boards",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Job Boards": {
+      "main": [
+        [
+          {
+            "node": "Filter Intent Signals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Intent Signals": {
+      "main": [
+        [
+          {
+            "node": "Enrich Company",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enrich Company": {
+      "main": [
+        [
+          {
+            "node": "Validate ICP Fit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate ICP Fit": {
+      "main": [
+        [
+          {
+            "node": "Find Decision Maker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Decision Maker": {
+      "main": [
+        [
+          {
+            "node": "Generate Outreach",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Outreach": {
+      "main": [
+        [
+          {
+            "node": "Create HubSpot Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "id": "workflow-28",
+  "tags": [
+    {
+      "id": "6",
+      "name": "Lead Gen"
+    },
+    {
+      "id": "5",
+      "name": "AI"
+    },
+    {
+      "id": "1",
+      "name": "CRM"
+    }
+  ]
+}

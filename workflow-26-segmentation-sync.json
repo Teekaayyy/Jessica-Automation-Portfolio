@@ -1,0 +1,366 @@
+{
+  "name": "26 - Behavioral Segmentation \u2192 CRM Sync",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 4 * * *"
+            }
+          ]
+        }
+      },
+      "id": "w26-001",
+      "name": "Daily 4am Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://data.mixpanel.com/api/2.0/export",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Basic {{ Buffer.from($env.MIXPANEL_SERVICE_ACCOUNT + ':' + $env.MIXPANEL_SECRET).toString('base64') }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"from_date\":\"{{ $now.minus(30,'days').format('YYYY-MM-DD') }}\",\"to_date\":\"{{ $now.format('YYYY-MM-DD') }}\",\"event\":[\"login\",\"feature_used\",\"session_start\"],\"where\":\"properties[\\\"$email\\\"] != null\"}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "w26-002",
+      "name": "Export Mixpanel Events",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        470,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Parse NDJSON from Mixpanel export\nconst ndjson = $input.first().json.data || '';\nconst lines = ndjson.split('\\n').filter(l => l.trim());\nconst events = [];\nfor (const line of lines) {\n  try { events.push(JSON.parse(line)); } catch(e) {}\n}\n\n// Aggregate by user\nconst users = {};\nconst now = Date.now();\n\nevents.forEach(event => {\n  const email = event.properties?.$email;\n  if (!email) return;\n  \n  if (!users[email]) {\n    users[email] = { email, logins: 0, features: new Set(), sessions: 0, last_seen: 0 };\n  }\n  \n  const u = users[email];\n  const ts = (event.properties?.time || 0) * 1000;\n  \n  if (event.event === 'login') u.logins++;\n  if (event.event === 'feature_used') u.features.add(event.properties?.feature_name || 'unknown');\n  if (event.event === 'session_start') u.sessions++;\n  if (ts > u.last_seen) u.last_seen = ts;\n});\n\n// Classify into segments\nreturn Object.values(users).map(u => {\n  const days_since = (now - u.last_seen) / (1000 * 60 * 60 * 24);\n  const feature_count = u.features.size;\n  \n  let segment;\n  if (u.logins >= 15 && feature_count >= 8 && days_since <= 7) segment = 'power_user';\n  else if (u.logins >= 5 && days_since <= 14) segment = 'active';\n  else if (u.logins >= 1 && days_since <= 30) segment = 'at_risk';\n  else segment = 'dormant';\n  \n  return {\n    json: {\n      email: u.email,\n      logins_30d: u.logins,\n      features_used: feature_count,\n      sessions_30d: u.sessions,\n      days_since_active: Math.round(days_since),\n      segment,\n      last_seen: new Date(u.last_seen).toISOString()\n    }\n  };\n});\n"
+      },
+      "id": "w26-003",
+      "name": "Cluster Segments",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        690,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "contact",
+        "operation": "update",
+        "contactId": "={{ $json.email }}",
+        "idProperty": "email",
+        "updateFields": {
+          "customPropertiesUi": {
+            "customPropertiesValues": [
+              {
+                "property": "behavioural_segment",
+                "value": "={{ $json.segment }}"
+              },
+              {
+                "property": "logins_30d",
+                "value": "={{ $json.logins_30d }}"
+              },
+              {
+                "property": "product_features_used",
+                "value": "={{ $json.features_used }}"
+              },
+              {
+                "property": "days_since_active",
+                "value": "={{ $json.days_since_active }}"
+              },
+              {
+                "property": "segment_updated_at",
+                "value": "={{ $now.toISO() }}"
+              }
+            ]
+          }
+        }
+      },
+      "id": "w26-004",
+      "name": "Sync to HubSpot",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        910,
+        300
+      ],
+      "credentials": {
+        "hubspotApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "HubSpot Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "segment-changed",
+              "leftValue": "={{ $json.segment }}",
+              "rightValue": "={{ $json.previous_segment }}",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "w26-005",
+      "name": "Segment Changed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1130,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.segment }}",
+                    "rightValue": "power_user",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "champion"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.segment }}",
+                    "rightValue": "at_risk",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "at_risk"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.segment }}",
+                    "rightValue": "dormant",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "dormant"
+            }
+          ]
+        }
+      },
+      "id": "w26-006",
+      "name": "Route Transition",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        1350,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "value": "REPLACE_WITH_SHEET_ID",
+          "__rl": true,
+          "mode": "id"
+        },
+        "sheetName": {
+          "value": "Segment Log",
+          "__rl": true,
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Date": "={{ $now.toISO() }}",
+            "Power_Users": "={{ $input.all().filter(i=>i.json.segment==='power_user').length }}",
+            "Active": "={{ $input.all().filter(i=>i.json.segment==='active').length }}",
+            "At_Risk": "={{ $input.all().filter(i=>i.json.segment==='at_risk').length }}",
+            "Dormant": "={{ $input.all().filter(i=>i.json.segment==='dormant').length }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "w26-007",
+      "name": "Log Distribution",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1350,
+        480
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## 26 \u2014 Behavioral Segmentation \u2192 CRM Sync\n\n**Env variables needed:**\n- MIXPANEL_SERVICE_ACCOUNT: serviceaccount@developer.mixpanel.com format\n- MIXPANEL_SECRET: service account secret\n\n**HubSpot custom properties to create:**\n- behavioural_segment (text)\n- logins_30d (number)\n- product_features_used (number)\n- days_since_active (number)\n- segment_updated_at (date)\n\n**Segment thresholds:** Edit the clustering logic in 'Cluster Segments' to match your product's engagement patterns.\n\n**HubSpot Lists:** Create 4 active lists filtered by behavioural_segment property for each tier.",
+        "height": 260,
+        "width": 420
+      },
+      "id": "w26-008",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        250,
+        540
+      ]
+    }
+  ],
+  "connections": {
+    "Daily 4am Trigger": {
+      "main": [
+        [
+          {
+            "node": "Export Mixpanel Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Export Mixpanel Events": {
+      "main": [
+        [
+          {
+            "node": "Cluster Segments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cluster Segments": {
+      "main": [
+        [
+          {
+            "node": "Sync to HubSpot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sync to HubSpot": {
+      "main": [
+        [
+          {
+            "node": "Segment Changed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Segment Changed?": {
+      "main": [
+        [
+          {
+            "node": "Route Transition",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Distribution",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "id": "workflow-26",
+  "tags": [
+    {
+      "id": "2",
+      "name": "Analytics"
+    },
+    {
+      "id": "4",
+      "name": "Data"
+    },
+    {
+      "id": "1",
+      "name": "CRM"
+    }
+  ]
+}

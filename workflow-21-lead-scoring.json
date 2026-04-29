@@ -1,0 +1,341 @@
+{
+  "name": "21 - AI Lead Scoring Engine",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 6 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "w21-001",
+      "name": "Daily 6am Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "contact",
+        "operation": "getAll",
+        "additionalFields": {
+          "filters": [
+            {
+              "propertyName": "lifecyclestage",
+              "operator": "IN",
+              "value": "lead,marketingqualifiedlead"
+            }
+          ],
+          "properties": [
+            "email",
+            "firstname",
+            "lastname",
+            "company",
+            "jobtitle",
+            "hs_lead_status",
+            "num_notes",
+            "recent_deal_amount",
+            "num_conversion_events",
+            "hs_email_open",
+            "hs_email_click"
+          ],
+          "limit": 100
+        }
+      },
+      "id": "w21-002",
+      "name": "Get Active Leads",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        470,
+        300
+      ],
+      "credentials": {
+        "hubspotApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "HubSpot Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "batchSize": 10,
+        "options": {}
+      },
+      "id": "w21-003",
+      "name": "Batch 10 Leads",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        690,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://company.clearbit.com/v2/companies/find?domain={{ encodeURIComponent($json.properties?.company?.value + '.com') }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.CLEARBIT_SECRET_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "w21-004",
+      "name": "Enrich with Clearbit",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        910,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const lead = $('Batch 10 Leads').item.json;\nconst company = $json?.id ? $json : {};\n\nreturn {\n  json: {\n    lead_id: lead.id,\n    email: lead.properties?.email?.value,\n    firstname: lead.properties?.firstname?.value,\n    lastname: lead.properties?.lastname?.value,\n    jobtitle: lead.properties?.jobtitle?.value || '',\n    company_name: lead.properties?.company?.value || '',\n    // Clearbit enrichment\n    company_size: company.metrics?.employees || 0,\n    company_industry: company.category?.industry || '',\n    company_funding: company.metrics?.raised || 0,\n    tech_stack: (company.tech || []).slice(0, 10).join(', '),\n    company_growth: company.metrics?.employeesRange || '',\n    // Engagement\n    email_opens: parseInt(lead.properties?.hs_email_open?.value || 0),\n    email_clicks: parseInt(lead.properties?.hs_email_click?.value || 0),\n    conversions: parseInt(lead.properties?.num_conversion_events?.value || 0),\n    notes_count: parseInt(lead.properties?.num_notes?.value || 0)\n  }\n};\n"
+      },
+      "id": "w21-005",
+      "name": "Build Scoring Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1130,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "modelId": {
+          "value": "gpt-4o",
+          "__rl": true,
+          "mode": "id"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are an expert B2B sales qualification analyst. Assess this lead against our Ideal Customer Profile and return a structured score.\n\nOur ICP (Ideal Customer Profile):\n- Company size: 50-500 employees\n- Industry: B2B SaaS, Technology, Professional Services\n- Role signals: VP/Director/Head/Manager in Revenue, Sales, Marketing, Operations, or Analytics\n- Tech stack: Uses modern SaaS tools (HubSpot, Salesforce, Slack, etc.)\n- Growth stage: Series A to Series C, or bootstrapped profitable\n\nReturn ONLY JSON:\n{\n  \"icp_score\": <0-10>,\n  \"size_fit\": <0-10>,\n  \"role_fit\": <0-10>,\n  \"industry_fit\": <0-10>,\n  \"tech_fit\": <0-10>,\n  \"key_fit_signals\": [\"signal1\", \"signal2\"],\n  \"key_concerns\": [\"concern1\"],\n  \"tier_recommendation\": \"A|B|C|D\",\n  \"rationale\": \"one sentence\"\n}",
+              "role": "system"
+            },
+            {
+              "content": "=Lead: {{ $json.firstname }} {{ $json.lastname }}, {{ $json.jobtitle }}\nCompany: {{ $json.company_name }} ({{ $json.company_size }} employees, {{ $json.company_industry }})\nFunding: ${{ $json.company_funding }}\nTech Stack: {{ $json.tech_stack }}\nEngagement: {{ $json.email_opens }} email opens, {{ $json.email_clicks }} clicks, {{ $json.conversions }} conversions",
+              "role": "user"
+            }
+          ]
+        },
+        "options": {
+          "responseFormat": "json_object",
+          "temperature": 0.2
+        }
+      },
+      "id": "w21-006",
+      "name": "AI ICP Analysis",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        1350,
+        300
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenAI Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const ai = JSON.parse($json.message.content);\nconst ctx = $('Build Scoring Context').item.json;\n\n// Weighted final score\nconst icp_component = ai.icp_score * 4;  // 40 pts max\nconst engagement_component = Math.min((ctx.email_opens * 2 + ctx.email_clicks * 3 + ctx.conversions * 5), 30); // 30 pts max\nconst company_size_component = ctx.company_size >= 50 && ctx.company_size <= 500 ? 20 : ctx.company_size > 500 ? 10 : 5; // 20 pts max\nconst timing_component = ctx.notes_count > 0 ? 10 : 0; // 10 pts\n\nconst final_score = Math.round(icp_component + engagement_component + company_size_component + timing_component);\nconst tier = final_score >= 80 ? 'A' : final_score >= 60 ? 'B' : final_score >= 40 ? 'C' : 'D';\n\nreturn {\n  json: {\n    lead_id: ctx.lead_id,\n    email: ctx.email,\n    final_score,\n    tier,\n    icp_score: ai.icp_score,\n    key_signals: ai.key_fit_signals?.join(', '),\n    concerns: ai.key_concerns?.join(', '),\n    rationale: ai.rationale,\n    scored_at: new Date().toISOString()\n  }\n};\n"
+      },
+      "id": "w21-007",
+      "name": "Calculate Final Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1570,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "contact",
+        "operation": "update",
+        "contactId": "={{ $json.lead_id }}",
+        "updateFields": {
+          "customPropertiesUi": {
+            "customPropertiesValues": [
+              {
+                "property": "lead_score",
+                "value": "={{ $json.final_score }}"
+              },
+              {
+                "property": "lead_tier",
+                "value": "={{ $json.tier }}"
+              },
+              {
+                "property": "icp_fit_score",
+                "value": "={{ $json.icp_score }}"
+              },
+              {
+                "property": "scoring_rationale",
+                "value": "={{ $json.rationale }}"
+              },
+              {
+                "property": "last_scored_at",
+                "value": "={{ $json.scored_at }}"
+              }
+            ]
+          }
+        }
+      },
+      "id": "w21-008",
+      "name": "Update HubSpot Tier",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        1790,
+        300
+      ],
+      "credentials": {
+        "hubspotApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "HubSpot Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## 21 \u2014 AI Lead Scoring Engine\n\n**HubSpot custom properties to create:**\n- lead_score (number)\n- lead_tier (text: A/B/C/D)\n- icp_fit_score (number)\n- scoring_rationale (multi-line text)\n- last_scored_at (date)\n\n**Env variables needed:**\n- CLEARBIT_SECRET_KEY (free tier: 2500 enrichments/month)\n\n**ICP customisation:** Update the ICP definition in the AI ICP Analysis node system prompt to match your actual ideal customer profile.\n\n**Scoring weights:** Edit the formula in 'Calculate Final Score' to match your empirical win rate data by signal.",
+        "height": 280,
+        "width": 420
+      },
+      "id": "w21-009",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        250,
+        520
+      ]
+    }
+  ],
+  "connections": {
+    "Daily 6am Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Active Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Active Leads": {
+      "main": [
+        [
+          {
+            "node": "Batch 10 Leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Batch 10 Leads": {
+      "main": [
+        [
+          {
+            "node": "Enrich with Clearbit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enrich with Clearbit": {
+      "main": [
+        [
+          {
+            "node": "Build Scoring Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Scoring Context": {
+      "main": [
+        [
+          {
+            "node": "AI ICP Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI ICP Analysis": {
+      "main": [
+        [
+          {
+            "node": "Calculate Final Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Final Score": {
+      "main": [
+        [
+          {
+            "node": "Update HubSpot Tier",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "id": "workflow-21",
+  "tags": [
+    {
+      "id": "1",
+      "name": "CRM"
+    },
+    {
+      "id": "5",
+      "name": "AI"
+    },
+    {
+      "id": "2",
+      "name": "Analytics"
+    }
+  ]
+}

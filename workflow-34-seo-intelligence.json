@@ -1,0 +1,323 @@
+{
+  "name": "34 - Automated SEO Content Intelligence",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * 1"
+            }
+          ]
+        }
+      },
+      "id": "w34-1",
+      "name": "Monday 8am Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.semrush.com/analytics/v1/",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "key",
+              "value": "={{ $env.SEMRUSH_API_KEY }}"
+            },
+            {
+              "name": "type",
+              "value": "tracking_rankings"
+            },
+            {
+              "name": "campaign_id",
+              "value": "={{ $env.SEMRUSH_CAMPAIGN_ID }}"
+            },
+            {
+              "name": "export_columns",
+              "value": "keyword,position,previous_position,url,search_volume,cpc"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "id": "w34-2",
+      "name": "Pull Semrush Rankings",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        420,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Parse CSV response from Semrush\nconst csv = $input.first().json.data || '';\nconst lines = csv.split('\\n').filter(l => l.trim());\nif (!lines.length) return [];\n\nconst headers = lines[0].split(';').map(h => h.trim());\nconst keywords = lines.slice(1).map(line => {\n  const values = line.split(';');\n  const obj = {};\n  headers.forEach((h, i) => { obj[h] = values[i]?.trim(); });\n  return obj;\n}).filter(k => k.Keyword);\n\n// Find declining keywords (drop >= 3 positions)\nconst declining = keywords\n  .map(k => ({\n    keyword: k.Keyword,\n    url: k.URL || k.Landing_page,\n    position: parseInt(k.Position || k.Pos || 100),\n    previous: parseInt(k['Prev.Position'] || k.Prev_pos || 100),\n    volume: parseInt(k['Search Volume'] || k.Volume || 0),\n    delta: parseInt(k.Position || 100) - parseInt(k['Prev.Position'] || 100)\n  }))\n  .filter(k => k.delta >= 3 && k.volume > 10)\n  .sort((a,b) => (b.volume * b.delta) - (a.volume * a.delta))\n  .slice(0, 5); // Top 5 most impactful\n\nreturn declining.map(k => ({ json: k }));\n"
+      },
+      "id": "w34-3",
+      "name": "Detect Declines",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        640,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.semrush.com/analytics/v1/?key={{ $env.SEMRUSH_API_KEY }}&type=phrase_organic&phrase={{ encodeURIComponent($json.keyword) }}&export_columns=url,domain,title&display_limit=3",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "w34-4",
+      "name": "Fetch SERP Competitors",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        860,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.url }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "w34-5",
+      "name": "Fetch Current Content",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1080,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const html = $json.data || '';\n// Extract headings\nconst h1 = [...html.matchAll(/<h1[^>]*>([^<]+)<\\/h1>/gi)].map(m => m[1]).join(', ');\nconst h2s = [...html.matchAll(/<h2[^>]*>([^<]+)<\\/h2>/gi)].map(m => m[1]).slice(0,8);\nconst h3s = [...html.matchAll(/<h3[^>]*>([^<]+)<\\/h3>/gi)].map(m => m[1]).slice(0,10);\nconst word_count = html.replace(/<[^>]*>/g,'').split(/\\s+/).length;\nconst meta_desc = (html.match(/<meta name=\"description\" content=\"([^\"]+)\"/) || [])[1] || '';\nconst title = (html.match(/<title>([^<]+)<\\/title>/) || [])[1] || '';\n\nconst kw = $('Detect Declines').item.json;\nconst competitors_raw = $('Fetch SERP Competitors').item.json.data || '';\nconst comp_urls = [...competitors_raw.matchAll(/https:\\/\\/[^;\\n]+/g)].map(m=>m[0]).slice(0,3);\n\nreturn { json: { ...kw, h1, h2s, h3s, word_count, meta_desc, title, competitor_urls: comp_urls } };\n"
+      },
+      "id": "w34-6",
+      "name": "Extract Content Structure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1300,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "modelId": {
+          "value": "gpt-4o",
+          "__rl": true,
+          "mode": "id"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are an expert SEO content strategist. Write a detailed, actionable content rewrite brief based on this page's current performance and competitive data.\n\nReturn ONLY JSON:\n{\"why_declining\": \"1-2 sentence analysis\", \"competitor_gaps\": [\"gap 1\", \"gap 2\", \"gap 3\"], \"recommended_structure\": {\"h1\": \"...\", \"h2s\": [\"section 1\", \"section 2\", \"...\"]}, \"target_word_count\": 0, \"lsi_keywords\": [\"kw1\",\"kw2\",\"kw3\",\"kw4\",\"kw5\"], \"new_meta_title\": \"...\", \"new_meta_description\": \"...\", \"priority\": \"HIGH|MEDIUM|LOW\"}",
+              "role": "system"
+            },
+            {
+              "content": "=Target keyword: {{ $json.keyword }}\nCurrent position: {{ $json.position }} (was {{ $json.previous }}, dropped {{ $json.delta }} places)\nSearch volume: {{ $json.volume }}/month\nPage URL: {{ $json.url }}\n\nCurrent page: {{ $json.title }}\nH1: {{ $json.h1 }}\nH2s: {{ $json.h2s.join(' | ') }}\nWord count: {{ $json.word_count }}\n\nTop competitors: {{ $json.competitor_urls.join(', ') }}",
+              "role": "user"
+            }
+          ]
+        },
+        "options": {
+          "responseFormat": "json_object",
+          "temperature": 0.4
+        }
+      },
+      "id": "w34-7",
+      "name": "Generate Brief",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        1520,
+        300
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenAI Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.notion.com/v1/pages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.NOTION_API_KEY }}"
+            },
+            {
+              "name": "Notion-Version",
+              "value": "2022-06-28"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"parent\":{\"database_id\":\"{{ $env.NOTION_CONTENT_DB_ID }}\"},\"properties\":{\"Name\":{\"title\":[{\"text\":{\"content\":\"Rewrite: {{ $('Detect Declines').item.json.keyword }}\"}}]},\"Priority\":{\"select\":{\"name\":\"{{ JSON.parse($json.message.content).priority }}\"}},\"Keyword\":{\"rich_text\":[{\"text\":{\"content\":\"{{ $('Detect Declines').item.json.keyword }}\"}}]},\"Current_Position\":{\"number\":{{ $('Detect Declines').item.json.position }}},\"URL\":{\"url\":\"{{ $('Detect Declines').item.json.url }}\"}}}",
+        "options": {}
+      },
+      "id": "w34-8",
+      "name": "Create Notion Task",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1740,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 34 \u2014 SEO Content Intelligence\n\n**Env variables needed:**\n- SEMRUSH_API_KEY: Semrush API key (requires Pro or above)\n- SEMRUSH_CAMPAIGN_ID: your Position Tracking campaign ID\n- NOTION_API_KEY: Notion integration token\n- NOTION_CONTENT_DB_ID: Content Backlog database ID in Notion\n\n**Semrush setup:** Create a Position Tracking campaign in Semrush for your domain and target keywords before deploying.\n\n**Threshold:** Change display_limit=5 in Detect Declines to process more or fewer declining pages per run.",
+        "height": 220,
+        "width": 400
+      },
+      "id": "w34-9",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        200,
+        540
+      ]
+    }
+  ],
+  "connections": {
+    "Monday 8am Trigger": {
+      "main": [
+        [
+          {
+            "node": "Pull Semrush Rankings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pull Semrush Rankings": {
+      "main": [
+        [
+          {
+            "node": "Detect Declines",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Detect Declines": {
+      "main": [
+        [
+          {
+            "node": "Fetch SERP Competitors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch SERP Competitors": {
+      "main": [
+        [
+          {
+            "node": "Fetch Current Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Current Content": {
+      "main": [
+        [
+          {
+            "node": "Extract Content Structure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Content Structure": {
+      "main": [
+        [
+          {
+            "node": "Generate Brief",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Brief": {
+      "main": [
+        [
+          {
+            "node": "Create Notion Task",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "id": "workflow-34"
+}

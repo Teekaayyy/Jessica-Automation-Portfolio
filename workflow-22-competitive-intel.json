@@ -1,0 +1,361 @@
+{
+  "name": "22 - Competitive Intelligence Automation",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 20 * * 0"
+            }
+          ]
+        }
+      },
+      "id": "w22-001",
+      "name": "Sunday 8pm Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://news.google.com/rss/search?q={{ encodeURIComponent($env.COMPETITOR_NAMES) }}&hl=en-US&gl=US&ceid=US:en",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "id": "w22-002",
+      "name": "Pull Competitor News",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        470,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://jsearch.p.rapidapi.com/search?query={{ encodeURIComponent($env.COMPETITOR_NAMES + ' jobs') }}&date_posted=week",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-RapidAPI-Key",
+              "value": "={{ $env.RAPIDAPI_KEY }}"
+            },
+            {
+              "name": "X-RapidAPI-Host",
+              "value": "jsearch.p.rapidapi.com"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "w22-003",
+      "name": "Pull Job Postings",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        470,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://data.g2.com/api/v1/products?filter[name]={{ encodeURIComponent($env.COMPETITOR_G2_NAMES) }}&include=reviews_summary",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Token token={{ $env.G2_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "w22-004",
+      "name": "Pull G2 Reviews",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        470,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.COMPETITOR_PRICING_URL }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "id": "w22-005",
+      "name": "Pull Pricing Page",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        470,
+        540
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "combineAll",
+        "options": {}
+      },
+      "id": "w22-006",
+      "name": "Merge All Signals",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        690,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const items = $input.all();\nconst signals = [];\n\n// Parse news RSS\ntry {\n  const newsText = items[0]?.json?.data || '';\n  const titles = [...newsText.matchAll(/<title>([^<]+)<\\/title>/g)].slice(1, 8).map(m => m[1]);\n  const dates = [...newsText.matchAll(/<pubDate>([^<]+)<\\/pubDate>/g)].slice(0, 7).map(m => m[1]);\n  titles.forEach((t, i) => signals.push({ type: 'news', content: t, date: dates[i] || '', source: 'Google News', relevance: 8 }));\n} catch(e) {}\n\n// Parse job postings\ntry {\n  const jobs = items[1]?.json?.data || [];\n  jobs.slice(0, 10).forEach(j => signals.push({ type: 'hiring', content: `${j.employer_name || 'Unknown'} hiring: ${j.job_title || 'Role'}`, date: j.job_posted_at_datetime_utc || '', source: 'Job Board', relevance: 7 }));\n} catch(e) {}\n\n// Parse G2 reviews\ntry {\n  const g2 = items[2]?.json?.data || [];\n  g2.slice(0, 3).forEach(p => signals.push({ type: 'review', content: `${p.attributes?.name}: ${p.attributes?.reviews_summary?.average_stars}/5 stars (${p.attributes?.reviews_summary?.total_reviews} reviews)`, date: new Date().toISOString(), source: 'G2', relevance: 6 }));\n} catch(e) {}\n\n// Pricing change detection\ntry {\n  const pricing = items[3]?.json?.data || '';\n  const hash = pricing.length; // Simple change detection by length\n  signals.push({ type: 'pricing', content: `Pricing page: ${hash} chars \u2014 compare to previous run to detect changes`, date: new Date().toISOString(), source: 'Website', relevance: 9 });\n} catch(e) {}\n\n// Sort by relevance and take top 15\nsignals.sort((a, b) => b.relevance - a.relevance);\nconst top_signals = signals.slice(0, 15);\n\nreturn [{ json: { signals: top_signals, signal_count: signals.length, run_date: new Date().toISOString() } }];\n"
+      },
+      "id": "w22-007",
+      "name": "Aggregate & Filter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        910,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "modelId": {
+          "value": "gpt-4o",
+          "__rl": true,
+          "mode": "id"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are a senior competitive intelligence analyst. Synthesise these competitor signals into a concise strategic brief for leadership.\n\nStructure your response with these 4 sections:\n1. WHAT CHANGED THIS WEEK (2-3 bullet points of specific changes)\n2. WHY IT MATTERS (1-2 paragraphs of strategic implications)\n3. WHAT COMPETITORS ARE SIGNALLING (read between the lines \u2014 what do these moves tell us about their strategy?)\n4. RECOMMENDED RESPONSE (2-3 specific actions for our team)\n\nBe specific, data-driven, and direct. This brief goes to the CEO and leadership team. No fluff.",
+              "role": "system"
+            },
+            {
+              "content": "=Run date: {{ $json.run_date }}\n\nCompetitor signals this week:\n{{ $json.signals.map(s => `[${s.type.toUpperCase()}] ${s.content} (${s.source})`).join('\\n') }}",
+              "role": "user"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.4
+        }
+      },
+      "id": "w22-008",
+      "name": "AI Strategic Brief",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        1130,
+        300
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenAI Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $env.LEADERSHIP_LIST }}",
+        "subject": "=Weekly Competitive Intelligence \u2014 {{ $now.format('DD MMM YYYY') }}",
+        "emailType": "html",
+        "message": "=<html><body style=\"font-family: Arial, sans-serif; max-width: 680px; margin: 0 auto; color: #333; line-height: 1.6;\">\n<h2 style=\"color: #f97316;\">\ud83d\udd0d Weekly Competitive Intelligence</h2>\n<p style=\"color: #888;\">{{ $('Aggregate & Filter').first().json.signal_count }} signals monitored \u00b7 Top 15 included \u00b7 {{ $now.format('DD MMM YYYY') }}</p>\n<hr/>\n<div style=\"font-size: 15px;\">{{ $json.message.content.replace(/\\n/g, '<br>').replace(/### /g, '<h3>').replace(/## /g, '<h2>') }}</div>\n<hr/>\n<p style=\"color: #888; font-size: 12px;\">This brief is auto-generated weekly by the Competitive Intelligence Automation workflow.</p>\n</body></html>",
+        "options": {}
+      },
+      "id": "w22-009",
+      "name": "Email Brief",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1350,
+        300
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Gmail Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## 22 \u2014 Competitive Intelligence Automation\n\n**Env variables needed:**\n- COMPETITOR_NAMES: comma-separated competitor names for news search\n- COMPETITOR_G2_NAMES: names as they appear on G2\n- COMPETITOR_PRICING_URL: one competitor pricing page URL\n- RAPIDAPI_KEY: for job posting data (RapidAPI JSearch)\n- G2_API_KEY: G2 Data API key (requires G2 account)\n- LEADERSHIP_LIST: comma-separated leadership email addresses\n\n**To track multiple competitors:** Add more HTTP Request nodes in parallel and merge them all together before the Aggregate node.",
+        "height": 240,
+        "width": 420
+      },
+      "id": "w22-010",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        250,
+        540
+      ]
+    }
+  ],
+  "connections": {
+    "Sunday 8pm Trigger": {
+      "main": [
+        [
+          {
+            "node": "Pull Competitor News",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Pull Job Postings",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Pull G2 Reviews",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Pull Pricing Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pull Competitor News": {
+      "main": [
+        [
+          {
+            "node": "Merge All Signals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pull Job Postings": {
+      "main": [
+        [
+          {
+            "node": "Merge All Signals",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Pull G2 Reviews": {
+      "main": [
+        [
+          {
+            "node": "Merge All Signals",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Pull Pricing Page": {
+      "main": [
+        [
+          {
+            "node": "Merge All Signals",
+            "type": "main",
+            "index": 3
+          }
+        ]
+      ]
+    },
+    "Merge All Signals": {
+      "main": [
+        [
+          {
+            "node": "Aggregate & Filter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate & Filter": {
+      "main": [
+        [
+          {
+            "node": "AI Strategic Brief",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Strategic Brief": {
+      "main": [
+        [
+          {
+            "node": "Email Brief",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "id": "workflow-22",
+  "tags": [
+    {
+      "id": "2",
+      "name": "Analytics"
+    },
+    {
+      "id": "5",
+      "name": "AI"
+    },
+    {
+      "id": "4",
+      "name": "Data"
+    }
+  ]
+}

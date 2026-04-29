@@ -1,0 +1,360 @@
+{
+  "name": "31 - Voice of Customer (VoC) Intelligence Engine",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 17 * * 5"
+            }
+          ]
+        }
+      },
+      "id": "w31-1",
+      "name": "Friday 5pm Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://itunes.apple.com/gb/rss/customerreviews/id={{ $env.APP_STORE_APP_ID }}/sortBy=mostRecent/json",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "w31-2",
+      "name": "Fetch App Reviews",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        420,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.delighted.com/v1/survey_responses.json",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Basic {{ Buffer.from($env.DELIGHTED_API_KEY + ':').toString('base64') }}"
+            }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "since",
+              "value": "={{ Math.floor(new Date(new Date().setDate(new Date().getDate()-7)).getTime()/1000) }}"
+            },
+            {
+              "name": "expand[]",
+              "value": "person"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "w31-3",
+      "name": "Export NPS Verbatims",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        420,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "ticket",
+        "operation": "getAll",
+        "additionalFields": {
+          "filters": [
+            {
+              "propertyName": "createdate",
+              "operator": "GTE",
+              "value": "={{ $now.minus(7,'days').toMillis() }}"
+            }
+          ],
+          "properties": [
+            "subject",
+            "content",
+            "hs_ticket_category",
+            "hs_pipeline_stage"
+          ]
+        }
+      },
+      "id": "w31-4",
+      "name": "Get Support Tickets",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        420,
+        420
+      ],
+      "credentials": {
+        "hubspotApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "HubSpot Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combineAll",
+        "options": {}
+      },
+      "id": "w31-5",
+      "name": "Merge Feedback",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        640,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const items = $input.all();\nconst allFeedback = [];\n\n// App reviews\ntry {\n  const appData = items[0]?.json;\n  const entries = appData?.feed?.entry || [];\n  entries.slice(0,50).forEach(e => {\n    const text = e?.content?.label || '';\n    if (text.length > 10) allFeedback.push({ source:'app_review', text: text.slice(0,200), score: parseInt(e?.['im:rating']?.label || 3), date: e?.updated?.label });\n  });\n} catch(e) {}\n\n// NPS verbatims\ntry {\n  const npsItems = items[1]?.json;\n  (Array.isArray(npsItems) ? npsItems : []).forEach(r => {\n    if (r.comment) allFeedback.push({ source:'nps', text: r.comment.slice(0,200), score: parseInt(r.score), date: r.created_at });\n  });\n} catch(e) {}\n\n// Support tickets\ntry {\n  const tickets = items.filter(i => i.json.properties?.subject);\n  tickets.forEach(t => {\n    const text = (t.json.properties?.subject?.value || '') + ' ' + (t.json.properties?.content?.value || '');\n    allFeedback.push({ source:'support', text: text.slice(0,200), score: 2, date: t.json.createdAt });\n  });\n} catch(e) {}\n\n// Deduplicate by text hash\nconst seen = new Set();\nconst deduped = allFeedback.filter(f => {\n  const key = f.text.toLowerCase().replace(/\\s+/g,' ').slice(0,50);\n  if (seen.has(key)) return false;\n  seen.add(key); return true;\n});\n\nreturn [{ json: { feedback: deduped, total: deduped.length } }];\n"
+      },
+      "id": "w31-6",
+      "name": "Normalise & Dedupe",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        860,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "modelId": {
+          "value": "gpt-4o",
+          "__rl": true,
+          "mode": "id"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are a product analyst. Classify each feedback item into ONE theme from this fixed list, rate sentiment 1-5 (1=very negative, 5=very positive), and extract a key phrase.\n\nThemes: Onboarding, Performance, Pricing, Missing Feature, Bug Report, Support Quality, UX Design, Integrations, Documentation, General Positive\n\nReturn ONLY JSON array: [{\"index\": 0, \"theme\": \"...\", \"sentiment\": 1-5, \"key_phrase\": \"...\"}]",
+              "role": "system"
+            },
+            {
+              "content": "=Classify these {{ $json.total }} feedback items:\n{{ $json.feedback.map((f,i) => `${i}: [${f.source}] ${f.text}`).join('\\n') }}",
+              "role": "user"
+            }
+          ]
+        },
+        "options": {
+          "responseFormat": "json_object",
+          "temperature": 0
+        }
+      },
+      "id": "w31-7",
+      "name": "Classify Themes",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        1080,
+        300
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenAI Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const ai = JSON.parse($json.message.content);\nconst feedback = $('Normalise & Dedupe').first().json.feedback;\nconst classified = Array.isArray(ai) ? ai : Object.values(ai)[0];\n\nconst themes = {};\nclassified.forEach(item => {\n  const f = feedback[item.index];\n  if (!f) return;\n  const t = item.theme;\n  if (!themes[t]) themes[t] = { theme: t, count: 0, sentiment_sum: 0, quotes: [] };\n  themes[t].count++;\n  themes[t].sentiment_sum += item.sentiment;\n  if (themes[t].quotes.length < 3) themes[t].quotes.push(f.text.slice(0,100));\n});\n\nconst ranked = Object.values(themes)\n  .map(t => ({ ...t, avg_sentiment: (t.sentiment_sum/t.count).toFixed(1), impact_score: t.count * (6 - t.sentiment_sum/t.count) }))\n  .sort((a,b) => b.impact_score - a.impact_score);\n\nreturn [{ json: { themes: ranked, week: new Date().toLocaleDateString('en-GB'), total_feedback: feedback.length } }];\n"
+      },
+      "id": "w31-8",
+      "name": "Score & Rank Themes",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1300,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.notion.com/v1/pages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.NOTION_API_KEY }}"
+            },
+            {
+              "name": "Notion-Version",
+              "value": "2022-06-28"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"parent\":{\"database_id\":\"{{ $env.NOTION_VOC_DB_ID }}\"},\"properties\":{\"Name\":{\"title\":[{\"text\":{\"content\":\"VoC Report \u2014 {{ $json.week }}\"}}]},\"Date\":{\"date\":{\"start\":\"{{ $now.format('YYYY-MM-DD') }}\"}}},\"children\":[{\"object\":\"block\",\"type\":\"heading_1\",\"heading_1\":{\"rich_text\":[{\"text\":{\"content\":\"Voice of Customer \u2014 {{ $json.week }}: {{ $json.total_feedback }} items analysed\"}}]}},{\"object\":\"block\",\"type\":\"paragraph\",\"paragraph\":{\"rich_text\":[{\"text\":{\"content\":\"{{ $json.themes.map(t => '#' + (t.rank||'') + ' ' + t.theme + ': ' + t.count + ' mentions, avg sentiment ' + t.avg_sentiment + '/5\\\\n' + t.quotes.map(q=>'  \u2192 '+q).join('\\\\n')).join('\\\\n\\\\n') }}\"}}]}}]}",
+        "options": {}
+      },
+      "id": "w31-9",
+      "name": "Publish to Notion",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1520,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 31 \u2014 VoC Intelligence Engine\n\n**Env variables needed:**\n- APP_STORE_APP_ID: your iOS app ID\n- DELIGHTED_API_KEY: Delighted NPS API key\n- NOTION_API_KEY: Notion integration token\n- NOTION_VOC_DB_ID: Notion VoC database ID\n\n**Theme taxonomy:** Update the themes list in the OpenAI system prompt to match your product's specific feedback categories.\n\n**Add Google Play:** Add a 4th HTTP branch fetching reviews from:\nhttps://androidpublisher.googleapis.com/androidpublisher/v3/applications/APP_ID/reviews",
+        "height": 220,
+        "width": 400
+      },
+      "id": "w31-10",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        200,
+        520
+      ]
+    }
+  ],
+  "connections": {
+    "Friday 5pm Trigger": {
+      "main": [
+        [
+          {
+            "node": "Fetch App Reviews",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Export NPS Verbatims",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get Support Tickets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch App Reviews": {
+      "main": [
+        [
+          {
+            "node": "Merge Feedback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Export NPS Verbatims": {
+      "main": [
+        [
+          {
+            "node": "Merge Feedback",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Get Support Tickets": {
+      "main": [
+        [
+          {
+            "node": "Merge Feedback",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Merge Feedback": {
+      "main": [
+        [
+          {
+            "node": "Normalise & Dedupe",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalise & Dedupe": {
+      "main": [
+        [
+          {
+            "node": "Classify Themes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Themes": {
+      "main": [
+        [
+          {
+            "node": "Score & Rank Themes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score & Rank Themes": {
+      "main": [
+        [
+          {
+            "node": "Publish to Notion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "id": "workflow-31"
+}

@@ -1,0 +1,377 @@
+{
+  "name": "38 - Partner Performance Intelligence System",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * 1"
+            }
+          ]
+        }
+      },
+      "id": "w38-1",
+      "name": "Monday 8am Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "deal",
+        "operation": "getAll",
+        "additionalFields": {
+          "filters": [
+            {
+              "propertyName": "partner_source",
+              "operator": "HAS_PROPERTY",
+              "value": ""
+            }
+          ],
+          "properties": [
+            "dealname",
+            "amount",
+            "dealstage",
+            "partner_source",
+            "closedate",
+            "createdate"
+          ],
+          "limit": 500
+        }
+      },
+      "id": "w38-2",
+      "name": "Get Partner Deals",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        420,
+        180
+      ],
+      "credentials": {
+        "hubspotApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "HubSpot Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "contact",
+        "operation": "getAll",
+        "additionalFields": {
+          "filters": [
+            {
+              "propertyName": "contact_type",
+              "operator": "EQ",
+              "value": "partner"
+            }
+          ],
+          "properties": [
+            "email",
+            "company",
+            "partner_company",
+            "partner_tier",
+            "last_email_opened",
+            "hs_sales_email_last_replied",
+            "partner_score"
+          ],
+          "limit": 200
+        }
+      },
+      "id": "w38-3",
+      "name": "Get Partner Contacts",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        420,
+        420
+      ],
+      "credentials": {
+        "hubspotApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "HubSpot Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combineAll",
+        "options": {}
+      },
+      "id": "w38-4",
+      "name": "Merge",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        640,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const items = $input.all();\nconst deals = items.filter(i => i.json.properties?.dealname);\nconst partners = items.filter(i => i.json.properties?.partner_company);\n\nconst now = Date.now();\nconst thirtyDays = 30 * 24 * 60 * 60 * 1000;\nconst ninetyDays = 90 * 24 * 60 * 60 * 1000;\n\n// Aggregate deals per partner\nconst dealsByPartner = {};\ndeals.forEach(deal => {\n  const partner = deal.json.properties?.partner_source?.value;\n  if (!partner) return;\n  if (!dealsByPartner[partner]) dealsByPartner[partner] = { total_deals: 0, won_deals: 0, total_value: 0, deals_90d: 0 };\n  dealsByPartner[partner].total_deals++;\n  if (deal.json.properties?.dealstage?.value === 'closedwon') {\n    dealsByPartner[partner].won_deals++;\n    dealsByPartner[partner].total_value += parseFloat(deal.json.properties?.amount?.value || 0);\n  }\n  const created = new Date(deal.json.createdAt).getTime();\n  if (now - created < ninetyDays) dealsByPartner[partner].deals_90d++;\n});\n\nreturn partners.map(p => {\n  const company = p.json.properties?.partner_company?.value;\n  const d = dealsByPartner[company] || { total_deals: 0, won_deals: 0, total_value: 0, deals_90d: 0 };\n  const last_email = p.json.properties?.last_email_opened?.value;\n  const days_since_contact = last_email ? Math.floor((now - new Date(last_email).getTime()) / (1000*60*60*24)) : 999;\n  const conversion_rate = d.total_deals > 0 ? Math.round(d.won_deals/d.total_deals*100) : 0;\n\n  // Scoring\n  const deal_vel = Math.min(d.deals_90d * 10, 35);\n  const rev_score = Math.min(d.total_value / 1000, 30);\n  const engage = Math.max(0, 20 - days_since_contact);\n  const quality = Math.min(conversion_rate * 0.15, 15);\n  const score = Math.round(deal_vel + rev_score + engage + quality);\n  const tier = score >= 80 ? 'Gold' : score >= 60 ? 'Silver' : score >= 40 ? 'Bronze' : 'At Risk';\n  const prev_tier = p.json.properties?.partner_tier?.value;\n  const tier_dropped = prev_tier && prev_tier !== tier && ['Gold','Silver','Bronze'].indexOf(tier) > ['Gold','Silver','Bronze'].indexOf(prev_tier);\n\n  return { json: { contact_id: p.json.id, company, score, tier, prev_tier, tier_dropped, deal_velocity: d.deals_90d, total_revenue: d.total_value, conversion_rate, days_since_contact } };\n});\n"
+      },
+      "id": "w38-5",
+      "name": "Score Partners",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        860,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "contact",
+        "operation": "update",
+        "contactId": "={{ $json.contact_id }}",
+        "updateFields": {
+          "customPropertiesUi": {
+            "customPropertiesValues": [
+              {
+                "property": "partner_tier",
+                "value": "={{ $json.tier }}"
+              },
+              {
+                "property": "partner_score",
+                "value": "={{ $json.score }}"
+              },
+              {
+                "property": "tier_updated_at",
+                "value": "={{ $now.toISO() }}"
+              }
+            ]
+          }
+        }
+      },
+      "id": "w38-6",
+      "name": "Update HubSpot",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        1080,
+        300
+      ],
+      "credentials": {
+        "hubspotApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "HubSpot Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "at-risk",
+              "leftValue": "={{ $json.tier }}",
+              "rightValue": "At Risk",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "w38-7",
+      "name": "At Risk?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1300,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $env.PARTNER_TEAM_EMAIL }}",
+        "subject": "=Partner At Risk: {{ $json.company }}",
+        "emailType": "html",
+        "message": "=<html><body style='font-family:Arial,sans-serif;max-width:600px;'><h2 style='color:#dc2626;'>Partner At Risk Alert</h2><p><strong>Partner:</strong> {{ $json.company }}<br/><strong>Score:</strong> {{ $json.score }}/100 ({{ $json.tier }})<br/><strong>Previous tier:</strong> {{ $json.prev_tier || 'N/A' }}<br/><strong>Days since last contact:</strong> {{ $json.days_since_contact }}<br/><strong>90-day deals:</strong> {{ $json.deal_velocity }}<br/><strong>Total revenue attributed:</strong> \u00a3{{ parseInt($json.total_revenue).toLocaleString() }}</p><h3>Suggested re-engagement actions:</h3><ul><li>Schedule a quarterly business review</li><li>Share new co-marketing opportunities</li><li>Review deal registration support and enablement materials</li><li>Invite to upcoming partner event or webinar</li></ul></body></html>",
+        "options": {}
+      },
+      "id": "w38-8",
+      "name": "At-Risk Alert",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1520,
+        180
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Gmail Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "value": "REPLACE_WITH_SHEET_ID",
+          "__rl": true,
+          "mode": "id"
+        },
+        "sheetName": {
+          "value": "Partner Scorecard",
+          "__rl": true,
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Week": "={{ $now.format('YYYY-MM-DD') }}",
+            "Partner": "={{ $json.company }}",
+            "Score": "={{ $json.score }}",
+            "Tier": "={{ $json.tier }}",
+            "Deals_90d": "={{ $json.deal_velocity }}",
+            "Revenue": "={{ $json.total_revenue }}",
+            "Conv_Rate": "={{ $json.conversion_rate }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "w38-9",
+      "name": "Scorecard Log",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1520,
+        420
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## 38 \u2014 Partner Performance Intelligence\n\n**HubSpot custom properties needed:**\n- contact_type (text \u2014 set to 'partner' for all partner contacts)\n- partner_company (text \u2014 the partner's company name, used for deal attribution)\n- partner_tier (text: Gold/Silver/Bronze/At Risk)\n- partner_score (number)\n- tier_updated_at (date)\n\n**Deal attribution:** Add a custom deal property 'partner_source' and require reps to populate it when creating partner-sourced deals.",
+        "height": 220,
+        "width": 380
+      },
+      "id": "w38-10",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        200,
+        560
+      ]
+    }
+  ],
+  "connections": {
+    "Monday 8am Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Partner Deals",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get Partner Contacts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Partner Deals": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Partner Contacts": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Score Partners",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score Partners": {
+      "main": [
+        [
+          {
+            "node": "Update HubSpot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update HubSpot": {
+      "main": [
+        [
+          {
+            "node": "At Risk?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "At Risk?": {
+      "main": [
+        [
+          {
+            "node": "At-Risk Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Scorecard Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "id": "workflow-38"
+}

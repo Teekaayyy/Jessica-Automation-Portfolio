@@ -1,0 +1,337 @@
+{
+  "name": "23 - Multi-Touch Revenue Attribution",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 7 * * 1"
+            }
+          ]
+        }
+      },
+      "id": "w23-001",
+      "name": "Monday 7am Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "deal",
+        "operation": "getAll",
+        "additionalFields": {
+          "filters": [
+            {
+              "propertyName": "dealstage",
+              "operator": "EQ",
+              "value": "closedwon"
+            },
+            {
+              "propertyName": "closedate",
+              "operator": "GTE",
+              "value": "={{ $now.minus(7,'days').startOf('day').toMillis() }}"
+            }
+          ],
+          "associations": "contacts",
+          "properties": [
+            "dealname",
+            "amount",
+            "closedate",
+            "hs_analytics_source",
+            "hs_analytics_source_data_1",
+            "hs_analytics_source_data_2"
+          ]
+        }
+      },
+      "id": "w23-002",
+      "name": "Get Closed Deals",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        470,
+        300
+      ],
+      "credentials": {
+        "hubspotApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "HubSpot Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://analyticsdata.googleapis.com/v1beta/properties/REPLACE_GA4_PROPERTY_ID:runReport",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer REPLACE_GA4_TOKEN"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"dimensions\":[{\"name\":\"sessionSource\"},{\"name\":\"sessionMedium\"},{\"name\":\"sessionCampaignName\"},{\"name\":\"date\"}],\"metrics\":[{\"name\":\"sessions\"},{\"name\":\"conversions\"}],\"dateRanges\":[{\"startDate\":\"7daysAgo\",\"endDate\":\"today\"}]}",
+        "options": {}
+      },
+      "id": "w23-003",
+      "name": "Get GA4 Touchpoints",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        470,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "combineAll",
+        "options": {}
+      },
+      "id": "w23-004",
+      "name": "Merge Sources",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        690,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Multi-touch attribution engine\nconst items = $input.all();\nconst deals = items.filter(i => i.json.properties?.dealname).map(i => i.json);\nconst ga4Response = items.find(i => i.json.rows)?.json;\n\n// Parse GA4 touchpoints\nconst touchpoints = {};\nif (ga4Response?.rows) {\n  ga4Response.rows.forEach(row => {\n    const source = row.dimensionValues[0].value;\n    const medium = row.dimensionValues[1].value;\n    const campaign = row.dimensionValues[2].value;\n    const key = `${source}/${medium}${campaign !== '(not set)' ? '/' + campaign : ''}`;\n    const sessions = parseInt(row.metricValues[0].value);\n    const conversions = parseInt(row.metricValues[1].value);\n    touchpoints[key] = (touchpoints[key] || 0) + sessions;\n  });\n}\n\n// Calculate attribution for each deal\nconst attributed = deals.map(deal => {\n  const amount = parseFloat(deal.properties?.amount?.value || 0);\n  const source = deal.properties?.hs_analytics_source?.value || 'direct';\n  const source_data = deal.properties?.hs_analytics_source_data_1?.value || '';\n  \n  // Simple attribution models\n  return {\n    deal_id: deal.id,\n    deal_name: deal.properties?.dealname?.value,\n    amount,\n    close_date: deal.properties?.closedate?.value,\n    first_touch_channel: source,\n    last_touch_channel: source_data || source,\n    attributed_revenue_first: amount,\n    attributed_revenue_last: amount,\n    attributed_revenue_linear: amount\n  };\n});\n\n// Aggregate by channel\nconst channel_totals = {};\nattributed.forEach(d => {\n  const ch = d.first_touch_channel;\n  if (!channel_totals[ch]) channel_totals[ch] = { first_touch: 0, last_touch: 0, linear: 0, deals: 0 };\n  channel_totals[ch].first_touch += d.attributed_revenue_first;\n  channel_totals[ch].last_touch += d.attributed_revenue_last;\n  channel_totals[ch].linear += d.attributed_revenue_linear;\n  channel_totals[ch].deals += 1;\n});\n\nreturn [{ json: { attributed, channel_totals, total_deals: attributed.length, total_revenue: attributed.reduce((s,d) => s+d.amount, 0), run_date: new Date().toISOString() } }];\n"
+      },
+      "id": "w23-005",
+      "name": "Run Attribution Models",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        910,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO revenue_attribution (deal_id, deal_name, amount, close_date, first_touch_channel, last_touch_channel, attributed_revenue_first, attributed_revenue_last, run_date)\nSELECT\n  (attribution->>'deal_id')::text,\n  attribution->>'deal_name',\n  (attribution->>'amount')::numeric,\n  (attribution->>'close_date')::date,\n  attribution->>'first_touch_channel',\n  attribution->>'last_touch_channel',\n  (attribution->>'attributed_revenue_first')::numeric,\n  (attribution->>'attributed_revenue_last')::numeric,\n  NOW()\nFROM json_array_elements($1::json) AS attribution\nON CONFLICT (deal_id, run_date::date) DO UPDATE SET attributed_revenue_first = EXCLUDED.attributed_revenue_first;",
+        "options": {}
+      },
+      "id": "w23-006",
+      "name": "Store Attribution",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1130,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "PostgreSQL Production"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "value": "REPLACE_WITH_SHEET_ID",
+          "__rl": true,
+          "mode": "id"
+        },
+        "sheetName": {
+          "value": "Attribution Dashboard",
+          "__rl": true,
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Run_Date": "={{ $json.run_date }}",
+            "Total_Deals": "={{ $json.total_deals }}",
+            "Total_Revenue": "={{ $json.total_revenue }}",
+            "Channel_Breakdown": "={{ JSON.stringify($json.channel_totals) }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "w23-007",
+      "name": "Update Dashboard",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1350,
+        300
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": {
+          "value": "#marketing-intel",
+          "__rl": true,
+          "mode": "name"
+        },
+        "text": "\ud83d\udcca *Weekly Revenue Attribution*\n\n*Closed Deals:* {{ $json.total_deals }}\n*Total Revenue:* \u00a3{{ $json.total_revenue.toLocaleString() }}\n\n*Top Channels (First Touch):*\n{{ Object.entries($json.channel_totals).sort((a,b) => b[1].first_touch - a[1].first_touch).slice(0,5).map(([ch, v]) => `\u2022 ${ch}: \u00a3${v.first_touch.toLocaleString()} (${v.deals} deals)`).join('\\n') }}\n\nFull breakdown in Attribution Dashboard sheet.",
+        "otherOptions": {
+          "mrkdwn": true
+        }
+      },
+      "id": "w23-008",
+      "name": "Weekly Summary",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1570,
+        300
+      ],
+      "credentials": {
+        "slackApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Slack Workspace"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## 23 \u2014 Multi-Touch Revenue Attribution\n\n**PostgreSQL table required:**\nCREATE TABLE revenue_attribution (\n  deal_id TEXT,\n  deal_name TEXT,\n  amount NUMERIC,\n  close_date DATE,\n  first_touch_channel TEXT,\n  last_touch_channel TEXT,\n  attributed_revenue_first NUMERIC,\n  attributed_revenue_last NUMERIC,\n  run_date TIMESTAMP DEFAULT NOW(),\n  UNIQUE(deal_id, DATE(run_date))\n);\n\n**GA4 setup:** Replace REPLACE_GA4_PROPERTY_ID and use a service account bearer token for authentication.",
+        "height": 240,
+        "width": 420
+      },
+      "id": "w23-009",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        250,
+        520
+      ]
+    }
+  ],
+  "connections": {
+    "Monday 7am Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Closed Deals",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get GA4 Touchpoints",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Closed Deals": {
+      "main": [
+        [
+          {
+            "node": "Merge Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get GA4 Touchpoints": {
+      "main": [
+        [
+          {
+            "node": "Merge Sources",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Sources": {
+      "main": [
+        [
+          {
+            "node": "Run Attribution Models",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Attribution Models": {
+      "main": [
+        [
+          {
+            "node": "Store Attribution",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Attribution": {
+      "main": [
+        [
+          {
+            "node": "Update Dashboard",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Dashboard": {
+      "main": [
+        [
+          {
+            "node": "Weekly Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "id": "workflow-23",
+  "tags": [
+    {
+      "id": "2",
+      "name": "Analytics"
+    },
+    {
+      "id": "4",
+      "name": "Data"
+    },
+    {
+      "id": "1",
+      "name": "CRM"
+    }
+  ]
+}

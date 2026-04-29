@@ -1,0 +1,397 @@
+{
+  "name": "35 - Financial Reconciliation & Discrepancy Engine",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 6 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "w35-1",
+      "name": "Daily 6am Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.stripe.com/v1/charges",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.STRIPE_SECRET_KEY }}"
+            }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "created[gte]",
+              "value": "={{ Math.floor(new Date(new Date().setDate(new Date().getDate()-30)).getTime()/1000) }}"
+            },
+            {
+              "name": "limit",
+              "value": "100"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "w35-2",
+      "name": "Pull Stripe Charges",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        420,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "deal",
+        "operation": "getAll",
+        "additionalFields": {
+          "filters": [
+            {
+              "propertyName": "dealstage",
+              "operator": "EQ",
+              "value": "closedwon"
+            },
+            {
+              "propertyName": "closedate",
+              "operator": "GTE",
+              "value": "={{ $now.minus(30,'days').toMillis() }}"
+            }
+          ],
+          "properties": [
+            "dealname",
+            "amount",
+            "closedate",
+            "hs_acv",
+            "associated_contact",
+            "hubspot_owner_id"
+          ]
+        }
+      },
+      "id": "w35-3",
+      "name": "Pull HubSpot Deals",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        420,
+        300
+      ],
+      "credentials": {
+        "hubspotApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "HubSpot Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.xero.com/api.xro/2.0/Invoices",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.XERO_ACCESS_TOKEN }}"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "where",
+              "value": "=Date >= DateTime({{ $now.minus(30,'days').format('YYYY, MM, DD') }})"
+            },
+            {
+              "name": "order",
+              "value": "Date DESC"
+            },
+            {
+              "name": "unitdp",
+              "value": "2"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "w35-4",
+      "name": "Pull Xero Invoices",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        420,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "combineAll",
+        "options": {}
+      },
+      "id": "w35-5",
+      "name": "Merge Sources",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        640,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const items = $input.all();\nconst stripe = items.filter(i => i.json.data?.length && i.json.data[0]?.amount).flatMap(i => i.json.data || []);\nconst deals = items.filter(i => i.json.properties?.dealname);\nconst xeroInvoices = items.find(i => i.json.Invoices)?.json?.Invoices || [];\n\nconst criticals = [], warnings = [], infos = [];\nconst TOL = 0.01; // 1% tolerance\nconst BDAYS_TOL = 5;\n\n// Helper: business days since date\nfunction bizDays(dateStr) {\n  const then = new Date(dateStr); const now = new Date();\n  let days = 0; const cur = new Date(then);\n  while (cur < now) {\n    const d = cur.getDay(); if (d !== 0 && d !== 6) days++;\n    cur.setDate(cur.getDate()+1);\n  }\n  return days;\n}\n\n// Check 1: Deals with no matching Stripe charge\ndeals.forEach(deal => {\n  const amount = parseFloat(deal.json.properties?.amount?.value || 0);\n  const closeDate = deal.json.properties?.closedate?.value;\n  const name = deal.json.properties?.dealname?.value;\n  if (!amount || amount < 100) return;\n  const days = bizDays(closeDate);\n  if (days < BDAYS_TOL) return;\n  const match = stripe.find(c => Math.abs((c.amount/100) - amount) / amount < TOL);\n  if (!match) criticals.push({ type: 'MISSING_PAYMENT', severity: 'CRITICAL', deal: name, amount, detail: `Deal ${name} (\u00a3${amount}) closed ${days} biz days ago \u2014 no matching Stripe charge found` });\n});\n\n// Check 2: Stripe charges with no HubSpot deal (>\u00a3500)\nconst deal_amounts = deals.map(d => parseFloat(d.json.properties?.amount?.value || 0));\nstripe.filter(c => c.amount > 50000).forEach(charge => { // >\u00a3500\n  const amt = charge.amount/100;\n  const match = deal_amounts.find(a => Math.abs(a - amt) / amt < TOL);\n  if (!match) warnings.push({ type: 'UNMATCHED_CHARGE', severity: 'WARNING', amount: amt, detail: `Stripe charge \u00a3${amt.toFixed(2)} on ${new Date(charge.created*1000).toLocaleDateString()} \u2014 no matching HubSpot deal found` });\n});\n\n// Check 3: Xero overdue invoices\nxeroInvoices.filter(inv => inv.Type === 'ACCREC' && inv.AmountDue > 0).forEach(inv => {\n  const overdue = bizDays(inv.DueDate);\n  if (overdue > 30) criticals.push({ type: 'OVERDUE_INVOICE', severity: 'CRITICAL', detail: `Invoice ${inv.InvoiceNumber} for ${inv.Contact?.Name}: \u00a3${inv.AmountDue} \u2014 ${overdue} days overdue` });\n  else if (overdue > 0) warnings.push({ type: 'OVERDUE_INVOICE', severity: 'WARNING', detail: `Invoice ${inv.InvoiceNumber}: \u00a3${inv.AmountDue} \u2014 ${overdue} days past due` });\n});\n\nreturn [{ json: { criticals, warnings, infos, has_criticals: criticals.length > 0, report_date: new Date().toLocaleDateString('en-GB'), clean_count: deals.length - criticals.length } }];\n"
+      },
+      "id": "w35-6",
+      "name": "Reconciliation Engine",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        860,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-crit",
+              "leftValue": "={{ $json.has_criticals }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "w35-7",
+      "name": "Has Criticals?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1080,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": {
+          "value": "#finance-alerts",
+          "__rl": true,
+          "mode": "name"
+        },
+        "text": "\ud83d\udea8 *Financial Reconciliation \u2014 Critical Discrepancies Found*\n\n*Report date:* {{ $json.report_date }}\n*Critical items:* {{ $json.criticals.length }}\n\n{{ $json.criticals.map(c => `\u2022 [${c.type}] ${c.detail}`).join('\\n') }}\n\nFull report being emailed to finance team now.",
+        "otherOptions": {
+          "mrkdwn": true
+        }
+      },
+      "id": "w35-8",
+      "name": "Critical Slack Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1300,
+        180
+      ],
+      "credentials": {
+        "slackApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Slack Workspace"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $env.FINANCE_TEAM_EMAIL }}",
+        "subject": "=Daily Reconciliation Report \u2014 {{ $json.report_date }}",
+        "emailType": "html",
+        "message": "=<html><body style='font-family:Arial,sans-serif;max-width:680px;color:#333;'><h2>Daily Reconciliation Report</h2><p>{{ $json.report_date }} \u00b7 {{ $json.clean_count }} clean items</p>{{ $json.criticals.length > 0 ? '<h3 style=\"color:#dc2626;\">\ud83d\udd34 Critical (' + $json.criticals.length + ')</h3><ul>' + $json.criticals.map(c=>'<li><strong>'+c.type+':</strong> '+c.detail+'</li>').join('') + '</ul>' : '<p style=\"color:green;\">\u2705 No critical items</p>' }}{{ $json.warnings.length > 0 ? '<h3 style=\"color:#d97706;\">\u26a0\ufe0f Warnings (' + $json.warnings.length + ')</h3><ul>' + $json.warnings.map(w=>'<li>'+w.detail+'</li>').join('') + '</ul>' : '' }}<hr/><p style='color:#888;font-size:12px;'>Auto-generated by Financial Reconciliation Engine</p></body></html>",
+        "options": {}
+      },
+      "id": "w35-9",
+      "name": "Email Finance Report",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1300,
+        420
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Gmail Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## 35 \u2014 Financial Reconciliation Engine\n\n**Env variables needed:**\n- STRIPE_SECRET_KEY: Stripe secret key\n- XERO_ACCESS_TOKEN: Xero OAuth2 access token\n- FINANCE_TEAM_EMAIL: finance team distribution list\n\n**Xero OAuth2:** Xero uses short-lived tokens. Set up an n8n Xero OAuth2 credential and use the built-in Xero node instead of HTTP Request for production (handles token refresh automatically).\n\n**Amount in Stripe:** All Stripe amounts are in smallest currency unit (pence/cents) \u2014 the Code node divides by 100 to get pounds/dollars.",
+        "height": 220,
+        "width": 400
+      },
+      "id": "w35-10",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        200,
+        560
+      ]
+    }
+  ],
+  "connections": {
+    "Daily 6am Trigger": {
+      "main": [
+        [
+          {
+            "node": "Pull Stripe Charges",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Pull HubSpot Deals",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Pull Xero Invoices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pull Stripe Charges": {
+      "main": [
+        [
+          {
+            "node": "Merge Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pull HubSpot Deals": {
+      "main": [
+        [
+          {
+            "node": "Merge Sources",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Pull Xero Invoices": {
+      "main": [
+        [
+          {
+            "node": "Merge Sources",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Merge Sources": {
+      "main": [
+        [
+          {
+            "node": "Reconciliation Engine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reconciliation Engine": {
+      "main": [
+        [
+          {
+            "node": "Has Criticals?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Criticals?": {
+      "main": [
+        [
+          {
+            "node": "Critical Slack Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Email Finance Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Critical Slack Alert": {
+      "main": [
+        [
+          {
+            "node": "Email Finance Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "id": "workflow-35"
+}

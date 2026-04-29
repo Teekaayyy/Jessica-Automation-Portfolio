@@ -1,0 +1,290 @@
+{
+  "name": "32 - Sales Call Intelligence & Coaching Engine",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "call-transcript",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "w32-1",
+      "name": "Transcript Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\"status\":\"processing\",\"message\":\"Transcript received and being scored.\"}"
+      },
+      "id": "w32-2",
+      "name": "Immediate ACK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        420,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const body = $json.body;\nconst raw = body.transcript_text || '';\nconst words = raw.split(/\\s+/);\n// If >3000 words, take first+last 1500 words to stay in token budget\nconst text = words.length > 3000\n  ? words.slice(0, 1500).join(' ') + '\\n[...middle omitted...]\\n' + words.slice(-1500).join(' ')\n  : raw;\nreturn { json: { rep_name: body.rep_name, rep_email: body.rep_email, deal_id: body.deal_id, call_date: body.call_date || new Date().toISOString(), duration_mins: body.duration_mins, transcript: text } };\n"
+      },
+      "id": "w32-3",
+      "name": "Parse & Chunk",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        420,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "modelId": {
+          "value": "gpt-4o",
+          "__rl": true,
+          "mode": "id"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are an expert sales coach who uses the MEDDIC and Challenger Sale methodologies. Score this sales call across 8 dimensions and write specific coaching notes for the rep.\n\nScoring rubric (each dimension 1-5):\n1. Discovery Quality: Did they ask open, insightful questions about the prospect's situation?\n2. Pain Articulation: Did they help the prospect articulate the business impact of their problem?\n3. Value Alignment: Did they connect their solution specifically to the prospect's stated needs?\n4. Objection Handling: Did they address objections with evidence rather than deflecting?\n5. Competitive Handling: Did they differentiate without badmouthing competitors?\n6. Next Steps Quality: Did they get a specific, committed next step with date and stakeholders?\n7. Talk Ratio: Did the rep talk less than 50% of the time? (5=talked <40%, 1=talked >70%)\n8. Rapport: Did they build authentic connection without being sycophantic?\n\nReturn ONLY JSON:\n{\"scores\":{\"discovery\":0,\"pain\":0,\"value\":0,\"objection\":0,\"competitive\":0,\"next_steps\":0,\"talk_ratio\":0,\"rapport\":0},\"overall\":0,\"call_summary\":\"2 sentences\",\"top_strength\":\"specific example from the call\",\"top_improvement\":\"specific, actionable coaching point with example of what could have been said instead\",\"coaching_notes\":\"3-4 paragraph personalised coaching feedback in 2nd person\"}",
+              "role": "system"
+            },
+            {
+              "content": "=Rep: {{ $json.rep_name }}\nCall date: {{ $json.call_date }}\nDuration: {{ $json.duration_mins }} minutes\n\nTranscript:\n{{ $json.transcript }}",
+              "role": "user"
+            }
+          ]
+        },
+        "options": {
+          "responseFormat": "json_object",
+          "temperature": 0.3
+        }
+      },
+      "id": "w32-4",
+      "name": "Score Call",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        640,
+        300
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenAI Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const ai = JSON.parse($json.message.content);\nconst meta = $('Parse & Chunk').item.json;\nconst s = ai.scores;\nconst weighted_overall = Math.round((s.discovery*2 + s.pain*2 + s.value*1.5 + s.next_steps*2 + s.objection*1 + s.talk_ratio*1 + s.competitive*0.5) / 10);\n\nconst breakdown = Object.entries(s).map(([k,v]) => `${k.replace(/_/g,' ').toUpperCase()}: ${v}/5`).join('\\n');\n\nreturn { json: { ...meta, scores: s, overall: weighted_overall, call_summary: ai.call_summary, top_strength: ai.top_strength, top_improvement: ai.top_improvement, coaching_notes: ai.coaching_notes, score_breakdown: breakdown, scored_at: new Date().toISOString() } };\n"
+      },
+      "id": "w32-5",
+      "name": "Structure Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        860,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "note",
+        "operation": "create",
+        "body": "=CALL COACHING SCORECARD\\n===================\\nRep: {{ $json.rep_name }} | Date: {{ $json.call_date }} | Duration: {{ $json.duration_mins }}min\\nOverall Score: {{ $json.overall }}/5\\n\\n{{ $json.score_breakdown }}\\n\\nSUMMARY: {{ $json.call_summary }}\\n\\nSTRENGTH: {{ $json.top_strength }}\\nIMPROVEMENT: {{ $json.top_improvement }}\\n\\nCOACHING NOTES:\\n{{ $json.coaching_notes }}",
+        "associations": [
+          {
+            "toObjectType": "deals",
+            "toObjectId": "={{ $json.deal_id }}",
+            "fromObjectType": "notes"
+          }
+        ]
+      },
+      "id": "w32-6",
+      "name": "Log to HubSpot",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        1080,
+        300
+      ],
+      "credentials": {
+        "hubspotApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "HubSpot Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "value": "REPLACE_WITH_SHEET_ID",
+          "__rl": true,
+          "mode": "id"
+        },
+        "sheetName": {
+          "value": "Call Scores",
+          "__rl": true,
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Date": "={{ $json.call_date }}",
+            "Rep": "={{ $json.rep_name }}",
+            "Deal_ID": "={{ $json.deal_id }}",
+            "Overall": "={{ $json.overall }}",
+            "Discovery": "={{ $json.scores.discovery }}",
+            "Pain": "={{ $json.scores.pain }}",
+            "Value": "={{ $json.scores.value }}",
+            "NextSteps": "={{ $json.scores.next_steps }}",
+            "Coaching_Focus": "={{ $json.top_improvement }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "w32-7",
+      "name": "Log Rep Score",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1080,
+        460
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.rep_email }}",
+        "subject": "=Call Coaching: {{ $json.call_date }} \u2014 Score {{ $json.overall }}/5",
+        "emailType": "html",
+        "message": "=<html><body style='font-family:Arial,sans-serif;max-width:600px;'><h2>Call Coaching Notes</h2><p><strong>Overall:</strong> {{ $json.overall }}/5 &nbsp; | &nbsp; <strong>Duration:</strong> {{ $json.duration_mins }} minutes</p><hr/><h3>Score Breakdown</h3><pre style='background:#f5f5f5;padding:10px;'>{{ $json.score_breakdown }}</pre><h3>Your Coaching Notes</h3><p>{{ $json.coaching_notes.replace(/\\n/g,'<br>') }}</p><h3>Top Strength</h3><p>{{ $json.top_strength }}</p><h3>Key Improvement</h3><p>{{ $json.top_improvement }}</p></body></html>",
+        "options": {}
+      },
+      "id": "w32-8",
+      "name": "Send Rep Coaching",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1300,
+        300
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Gmail Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## 32 \u2014 Sales Call Intelligence\n\n**Webhook payload (from Fireflies/Gong/Otter):**\n```json\n{\n  \"rep_name\": \"Jessica\",\n  \"rep_email\": \"rep@company.com\",\n  \"deal_id\": \"12345\",\n  \"call_date\": \"2025-04-01\",\n  \"duration_mins\": 45,\n  \"transcript_text\": \"Full transcript text here...\"\n}\n```\n\n**Fireflies integration:** Use Fireflies webhooks (post-transcription hook) to auto-send transcripts.\n\n**Scoring customisation:** Edit the rubric in the OpenAI system prompt to match your specific sales methodology.",
+        "height": 220,
+        "width": 400
+      },
+      "id": "w32-9",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        200,
+        540
+      ]
+    }
+  ],
+  "connections": {
+    "Transcript Webhook": {
+      "main": [
+        [
+          {
+            "node": "Parse & Chunk",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Immediate ACK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse & Chunk": {
+      "main": [
+        [
+          {
+            "node": "Score Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score Call": {
+      "main": [
+        [
+          {
+            "node": "Structure Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structure Output": {
+      "main": [
+        [
+          {
+            "node": "Log to HubSpot",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Rep Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log to HubSpot": {
+      "main": [
+        [
+          {
+            "node": "Send Rep Coaching",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "id": "workflow-32"
+}

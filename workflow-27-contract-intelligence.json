@@ -1,0 +1,400 @@
+{
+  "name": "27 - AI Contract Intelligence Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "contract-upload",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "w27-001",
+      "name": "Contract Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\"status\":\"processing\",\"message\":\"Contract is being analysed. Results will be logged to HubSpot and Airtable.\"}"
+      },
+      "id": "w27-002",
+      "name": "Immediate Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        470,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.pdf2text.app/convert",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.PDF2TEXT_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"pdf_base64\": \"{{ $json.body.pdf_base64 }}\", \"ocr_enabled\": true}",
+        "options": {}
+      },
+      "id": "w27-003",
+      "name": "PDF to Text",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        470,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const text = $json.text || $json.content || '';\nconst deal_id = $('Contract Webhook').item.json.body.deal_id;\nconst contract_type = $('Contract Webhook').item.json.body.contract_type || 'unknown';\n\n// Split into chunks of 8000 words with 500-word overlap\nconst words = text.split(/\\s+/);\nconst chunks = [];\nconst chunk_size = 8000;\nconst overlap = 500;\n\nfor (let i = 0; i < words.length; i += chunk_size - overlap) {\n  chunks.push(words.slice(i, i + chunk_size).join(' '));\n  if (i + chunk_size >= words.length) break;\n}\n\n// For now, process first chunk (covers most contracts up to ~60 pages)\nreturn [{ json: { text_chunk: chunks[0] || text, deal_id, contract_type, total_chunks: chunks.length, char_count: text.length } }];\n"
+      },
+      "id": "w27-004",
+      "name": "Prepare Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        690,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "modelId": {
+          "value": "gpt-4o",
+          "__rl": true,
+          "mode": "id"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are an expert contract analyst and lawyer. Extract structured data from this contract. Be precise \u2014 only extract what is explicitly stated.\n\nReturn ONLY valid JSON with this structure:\n{\n  \"parties\": [{\"name\": \"\", \"role\": \"client|vendor|party\"}],\n  \"effective_date\": \"ISO date or null\",\n  \"expiry_date\": \"ISO date or null\",\n  \"total_value\": \"string or null\",\n  \"payment_terms\": \"string or null\",\n  \"notice_period_days\": \"number or null\",\n  \"auto_renewal\": true|false,\n  \"renewal_terms\": \"string or null\",\n  \"liability_cap\": \"string or null\",\n  \"termination_for_cause\": \"string or null\",\n  \"termination_for_convenience\": \"string or null\",\n  \"ip_ownership\": \"string or null\",\n  \"governing_law\": \"string or null\",\n  \"dispute_resolution\": \"string or null\",\n  \"key_obligations_client\": [\"obligation1\"],\n  \"key_obligations_vendor\": [\"obligation1\"],\n  \"unusual_clauses\": [\"clause description\"],\n  \"risk_flags\": [\"risk description\"]\n}",
+              "role": "system"
+            },
+            {
+              "content": "=Contract type: {{ $json.contract_type }}\n\nContract text:\n{{ $json.text_chunk }}",
+              "role": "user"
+            }
+          ]
+        },
+        "options": {
+          "responseFormat": "json_object",
+          "temperature": 0
+        }
+      },
+      "id": "w27-005",
+      "name": "AI Extract Contract",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        910,
+        300
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenAI Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const extracted = JSON.parse($json.message.content);\nconst meta = $('Prepare Text').item.json;\n\n// Risk scoring\nconst risk_flags = extracted.risk_flags || [];\nconst unusual_clauses = extracted.unusual_clauses || [];\n\nconst risk_points = [\n  !extracted.liability_cap ? 1 : 0,\n  extracted.auto_renewal && !extracted.renewal_terms ? 1 : 0,\n  !extracted.termination_for_convenience ? 1 : 0,\n  risk_flags.length >= 2 ? 1 : 0,\n  unusual_clauses.length >= 2 ? 1 : 0\n].reduce((a,b) => a+b, 0);\n\nconst risk_tier = risk_points >= 4 ? 'HIGH' : risk_points >= 2 ? 'MEDIUM' : 'LOW';\n\nconst note_body = [\n  `CONTRACT INTELLIGENCE \u2014 ${meta.contract_type?.toUpperCase()}`,\n  '='.repeat(50),\n  `Risk Tier: ${risk_tier} (${risk_points}/5 flags)`,\n  '',\n  'PARTIES',\n  ...(extracted.parties || []).map(p => `\u2022 ${p.name} (${p.role})`),\n  '',\n  'KEY DATES',\n  `Effective: ${extracted.effective_date || 'Not specified'}`,\n  `Expiry: ${extracted.expiry_date || 'Not specified'}`,\n  `Notice Period: ${extracted.notice_period_days ? extracted.notice_period_days + ' days' : 'Not specified'}`,\n  `Auto-Renewal: ${extracted.auto_renewal ? 'YES' : 'NO'}`,\n  '',\n  'FINANCIAL TERMS',\n  `Value: ${extracted.total_value || 'Not specified'}`,\n  `Payment: ${extracted.payment_terms || 'Not specified'}`,\n  `Liability Cap: ${extracted.liability_cap || 'NOT SPECIFIED \u2014 RISK'}`,\n  '',\n  'RISK FLAGS',\n  ...(risk_flags.length ? risk_flags.map(f => `\u26a0\ufe0f ${f}`) : ['None identified']),\n  '',\n  'UNUSUAL CLAUSES',\n  ...(unusual_clauses.length ? unusual_clauses.map(c => `\u2022 ${c}`) : ['None identified'])\n].join('\\n');\n\nreturn { json: { ...extracted, deal_id: meta.deal_id, contract_type: meta.contract_type, risk_tier, risk_points, note_body, analysed_at: new Date().toISOString() } };\n"
+      },
+      "id": "w27-006",
+      "name": "Score Risk",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1130,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "note",
+        "operation": "create",
+        "body": "={{ $json.note_body }}",
+        "associations": [
+          {
+            "toObjectType": "deals",
+            "toObjectId": "={{ $json.deal_id }}",
+            "fromObjectType": "notes"
+          }
+        ]
+      },
+      "id": "w27-007",
+      "name": "Log to HubSpot",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        1350,
+        300
+      ],
+      "credentials": {
+        "hubspotApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "HubSpot Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "application": {
+          "value": "REPLACE_WITH_AIRTABLE_BASE_ID",
+          "__rl": true,
+          "mode": "id"
+        },
+        "table": {
+          "value": "Contracts",
+          "__rl": true,
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "deal_id": "={{ $json.deal_id }}",
+            "contract_type": "={{ $json.contract_type }}",
+            "parties": "={{ $json.parties?.map(p=>p.name).join(', ') }}",
+            "effective_date": "={{ $json.effective_date }}",
+            "expiry_date": "={{ $json.expiry_date }}",
+            "total_value": "={{ $json.total_value }}",
+            "risk_tier": "={{ $json.risk_tier }}",
+            "liability_cap": "={{ $json.liability_cap }}",
+            "auto_renewal": "={{ $json.auto_renewal }}",
+            "governing_law": "={{ $json.governing_law }}",
+            "analysed_at": "={{ $json.analysed_at }}"
+          }
+        }
+      },
+      "id": "w27-008",
+      "name": "Save to Contract DB",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [
+        1570,
+        300
+      ],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Airtable Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true
+          },
+          "conditions": [
+            {
+              "id": "risk-check",
+              "leftValue": "={{ $json.risk_tier }}",
+              "rightValue": "LOW",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "w27-009",
+      "name": "High Risk?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1790,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": {
+          "value": "#legal-review",
+          "__rl": true,
+          "mode": "name"
+        },
+        "text": "\u26a0\ufe0f *Contract Risk Alert \u2014 {{ $json.risk_tier }}*\n\n*Type:* {{ $json.contract_type }}\n*Deal ID:* {{ $json.deal_id }}\n*Risk Points:* {{ $json.risk_points }}/5\n*Parties:* {{ $json.parties?.map(p=>p.name).join(', ') }}\n\n*Risk Flags:*\n{{ ($json.risk_flags || []).map(f => `\u2022 ${f}`).join('\\n') }}\n\nFull analysis logged to HubSpot deal and Airtable contract database.",
+        "otherOptions": {
+          "mrkdwn": true
+        }
+      },
+      "id": "w27-010",
+      "name": "Risk Alert",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        2010,
+        180
+      ],
+      "credentials": {
+        "slackApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Slack Workspace"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## 27 \u2014 AI Contract Intelligence\n\n**Webhook payload:**\n```json\n{\n  \"pdf_base64\": \"<base64 encoded PDF>\",\n  \"deal_id\": \"12345678\",\n  \"contract_type\": \"MSA\"\n}\n```\n\n**Env variables:**\n- PDF2TEXT_API_KEY: sign up at pdf2text.app (or use pdf.co)\n\n**Airtable setup:** Create 'Contracts' table with columns matching the Save node\n\n**Note:** For scanned PDFs, ensure OCR is enabled in the PDF2Text API call.",
+        "height": 240,
+        "width": 400
+      },
+      "id": "w27-011",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        250,
+        540
+      ]
+    }
+  ],
+  "connections": {
+    "Contract Webhook": {
+      "main": [
+        [
+          {
+            "node": "PDF to Text",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Immediate Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PDF to Text": {
+      "main": [
+        [
+          {
+            "node": "Prepare Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Text": {
+      "main": [
+        [
+          {
+            "node": "AI Extract Contract",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Extract Contract": {
+      "main": [
+        [
+          {
+            "node": "Score Risk",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score Risk": {
+      "main": [
+        [
+          {
+            "node": "Log to HubSpot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log to HubSpot": {
+      "main": [
+        [
+          {
+            "node": "Save to Contract DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to Contract DB": {
+      "main": [
+        [
+          {
+            "node": "High Risk?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "High Risk?": {
+      "main": [
+        [
+          {
+            "node": "Risk Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "id": "workflow-27",
+  "tags": [
+    {
+      "id": "5",
+      "name": "AI"
+    },
+    {
+      "id": "4",
+      "name": "Data"
+    },
+    {
+      "id": "1",
+      "name": "CRM"
+    }
+  ]
+}

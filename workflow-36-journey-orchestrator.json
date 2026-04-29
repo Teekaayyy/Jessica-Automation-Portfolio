@@ -1,0 +1,394 @@
+{
+  "name": "36 - Customer Journey Milestone Orchestrator",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 7 * * *"
+            }
+          ]
+        }
+      },
+      "id": "w36-1",
+      "name": "Daily 7am Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "contact",
+        "operation": "getAll",
+        "additionalFields": {
+          "filters": [
+            {
+              "propertyName": "lifecyclestage",
+              "operator": "EQ",
+              "value": "customer"
+            }
+          ],
+          "properties": [
+            "email",
+            "firstname",
+            "company",
+            "plan_type",
+            "milestone_1",
+            "milestone_2",
+            "milestone_3",
+            "milestone_4",
+            "milestone_5",
+            "journey_stage",
+            "days_in_stage",
+            "cs_owner",
+            "last_milestone_action_at"
+          ],
+          "limit": 500
+        }
+      },
+      "id": "w36-2",
+      "name": "Get All Customers",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        420,
+        300
+      ],
+      "credentials": {
+        "hubspotApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "HubSpot Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://YOUR_APP_API/api/v1/milestones",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.PRODUCT_API_KEY }}"
+            }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "updated_since",
+              "value": "={{ $now.minus(1,'days').toISO() }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "w36-3",
+      "name": "Pull Product Milestones",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        420,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "combineAll",
+        "options": {}
+      },
+      "id": "w36-4",
+      "name": "Merge",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        640,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const items = $input.all();\nconst contacts = items.filter(i => i.json.properties?.email);\nconst productMilestones = items.filter(i => i.json.account_id && i.json.milestones);\n\n// Build product milestone lookup by email\nconst pmLookup = {};\nproductMilestones.forEach(pm => { pmLookup[pm.json.email] = pm.json.milestones || []; });\n\nconst STALL_THRESHOLDS = { 'starter': [7,14,21,30,45], 'growth': [10,21,30,45,60], 'enterprise': [21,30,45,60,90] };\nconst MILESTONE_NAMES = ['Onboarded','Integration Connected','Team Expanded','First Outcome Achieved','Advanced Feature Adopted'];\n\nconst now = Date.now();\nconst actions = [];\n\ncontacts.forEach(contact => {\n  const p = contact.json.properties;\n  const plan = p.plan_type?.value || 'growth';\n  const thresholds = STALL_THRESHOLDS[plan] || STALL_THRESHOLDS.growth;\n  const email = p.email?.value;\n  const days_in_stage = parseInt(p.days_in_stage?.value || 0);\n  const last_action = p.last_milestone_action_at?.value;\n  const hrs_since_action = last_action ? (now - new Date(last_action).getTime())/(1000*60*60) : 9999;\n  if (hrs_since_action < 24) return; // Don't re-trigger within 24h\n\n  const milestones = [p.milestone_1?.value, p.milestone_2?.value, p.milestone_3?.value, p.milestone_4?.value, p.milestone_5?.value].map(v => v === 'true');\n  const product_milestones = pmLookup[email] || [];\n  const current_stage = milestones.filter(Boolean).length;\n\n  // Check for new completion (product API shows completed today but HubSpot not updated yet)\n  const new_completion = product_milestones.find(pm => pm.completed_today && !milestones[pm.index]);\n  if (new_completion) { actions.push({ json: { contact_id: contact.json.id, email, firstname: p.firstname?.value, company: p.company?.value, plan, action_type: 'milestone_completed', milestone_index: new_completion.index, milestone_name: MILESTONE_NAMES[new_completion.index], cs_owner: p.cs_owner?.value } }); return; }\n\n  // All milestones complete?\n  if (current_stage >= 5) { actions.push({ json: { contact_id: contact.json.id, email, firstname: p.firstname?.value, company: p.company?.value, plan, action_type: 'journey_complete', cs_owner: p.cs_owner?.value } }); return; }\n\n  // Stall detection\n  const stall_threshold = thresholds[current_stage] || 30;\n  if (days_in_stage > stall_threshold) { actions.push({ json: { contact_id: contact.json.id, email, firstname: p.firstname?.value, company: p.company?.value, plan, action_type: 'journey_stalled', current_stage, current_milestone: MILESTONE_NAMES[current_stage], days_stalled: days_in_stage, stall_threshold, cs_owner: p.cs_owner?.value } }); }\n});\n\nreturn actions;\n"
+      },
+      "id": "w36-5",
+      "name": "Journey Analysis",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        860,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {},
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.action_type }}",
+                    "rightValue": "milestone_completed",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "completed"
+            },
+            {
+              "conditions": {
+                "options": {},
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.action_type }}",
+                    "rightValue": "journey_stalled",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "stalled"
+            },
+            {
+              "conditions": {
+                "options": {},
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.action_type }}",
+                    "rightValue": "journey_complete",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "complete"
+            }
+          ]
+        }
+      },
+      "id": "w36-6",
+      "name": "Route Action",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        1080,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.email }}",
+        "subject": "=You've hit a milestone, {{ $json.firstname }}!",
+        "emailType": "text",
+        "message": "=Hi {{ $json.firstname }},\n\nCongratulations! You've just completed: {{ $json.milestone_name }}. That's a significant step in getting full value from your {{ $json.plan }} plan.\n\nHere's what we recommend next to keep the momentum going:\n[Your next-step content specific to this milestone here]\n\nKeep going \u2014 you're doing great.\n\nThe Customer Success Team",
+        "options": {}
+      },
+      "id": "w36-7",
+      "name": "Milestone Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1300,
+        180
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Gmail Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "task",
+        "operation": "create",
+        "subject": "=Journey Stall: {{ $json.company }} at {{ $json.current_milestone }} for {{ $json.days_stalled }} days",
+        "body": "=Account {{ $json.company }} has been stuck at milestone {{ $json.current_stage + 1 }} ({{ $json.current_milestone }}) for {{ $json.days_stalled }} days (threshold: {{ $json.stall_threshold }} days on {{ $json.plan }} plan).\n\nSuggested action: Reach out to understand what's blocking them at this milestone. Offer to do a live setup session or provide specific documentation for this step.",
+        "ownerId": "={{ $json.cs_owner }}",
+        "additionalFields": {
+          "hs_task_priority": "HIGH",
+          "hs_due_date": "={{ $now.toMillis() }}"
+        }
+      },
+      "id": "w36-8",
+      "name": "Stall CS Task",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [
+        1300,
+        360
+      ],
+      "credentials": {
+        "hubspotApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "HubSpot Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.delighted.com/v1/people.json",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Basic {{ Buffer.from($env.DELIGHTED_API_KEY + ':').toString('base64') }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"email\":\"{{ $json.email }}\",\"name\":\"{{ $json.firstname }}\",\"properties\":{\"account_stage\":\"journey_complete\",\"plan\":\"{{ $json.plan }}\"}}",
+        "options": {}
+      },
+      "id": "w36-9",
+      "name": "Trigger NPS Survey",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1300,
+        540
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 36 \u2014 Customer Journey Milestone Orchestrator\n\n**HubSpot custom properties needed:**\n- milestone_1 through milestone_5 (boolean)\n- journey_stage (number: 0-5)\n- days_in_stage (number \u2014 updated daily)\n- last_milestone_action_at (date)\n\n**Product API:** Replace YOUR_APP_API with your product's actual usage/milestone API endpoint.\n\n**Milestone names:** Edit MILESTONE_NAMES in the Journey Analysis code to match your actual product milestones.\n\n**Stall thresholds:** Adjust STALL_THRESHOLDS per plan tier based on your observed healthy customer timelines.",
+        "height": 240,
+        "width": 400
+      },
+      "id": "w36-10",
+      "name": "Setup Notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        200,
+        560
+      ]
+    }
+  ],
+  "connections": {
+    "Daily 7am Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get All Customers",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Pull Product Milestones",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get All Customers": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pull Product Milestones": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Journey Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Journey Analysis": {
+      "main": [
+        [
+          {
+            "node": "Route Action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Action": {
+      "main": [
+        [
+          {
+            "node": "Milestone Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stall CS Task",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Trigger NPS Survey",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "id": "workflow-36"
+}
