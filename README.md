@@ -1,6 +1,6 @@
 # n8n Automation Portfolio
 
-A collection of 20 production-ready n8n workflow automations spanning CRM, AI, data engineering, lead generation, and analytics. Each workflow is fully documented with node-by-node breakdowns, setup instructions, and importable JSON files.
+A collection of 40 production-ready n8n workflow automations spanning CRM, AI, data engineering, lead generation, and analytics. Each workflow is fully documented with node-by-node breakdowns, setup instructions, and importable JSON files.
 
 ---
 
@@ -17,7 +17,7 @@ portfolio-v3.html          # Main portfolio site (single-file, no dependencies)
 workflow-01-*.json         # Importable n8n workflow files
 workflow-02-*.json
 ...
-workflow-20-*.json
+workflow-40-*.json
 README.md
 ```
 
