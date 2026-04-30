@@ -1423,7 +1423,7 @@ function showProjectPage(id){
 
 // ── OBSERVERS + COUNTERS ─────────────────────────────────────────────────────
 function setupObservers(){
-  const obs=new IntersectionObserver(e=>{e.forEach(x=>{if(x.isIntersecting)x.target.classList.add('visible');});},{threshold:.1});
+  const obs=new IntersectionObserver(e=>{e.forEach(x=>{if(x.isIntersecting)x.target.classList.add('visible');});},{threshold:0});
   document.querySelectorAll('.reveal').forEach(el=>obs.observe(el));
 }
 function setupCounters(){
