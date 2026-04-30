@@ -6,7 +6,7 @@ A collection of 40 production-ready n8n workflow automations spanning CRM, AI, d
 
 ## 🔗 Live Portfolio
 
-View the full interactive portfolio with workflow screenshots, node documentation, and downloadable JSONs at 🌐 [Portfolio Website](https://jessica-automation.netlify.app/).
+View the full interactive portfolio with workflow screenshots, node documentation, and downloadable JSONs at 🌐 [Portfolio Website](https://jessica-automation.netlify.app/)
 
 ---
 
