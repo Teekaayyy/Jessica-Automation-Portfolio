@@ -1,0 +1,119 @@
+{
+  "name": "ElevenLabs Voice Clone Campaign Engine",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "launch-voice-campaign",
+        "responseMode": "responseNode"
+      },
+      "name": "Campaign Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "resource": "contact",
+        "operation": "getAll",
+        "filters": {
+          "filter": "list_id={{ $json.segment_id }}"
+        },
+        "additionalFields": {
+          "properties": ["firstname", "lastname", "company", "last_activity_date", "phone", "email"]
+        }
+      },
+      "name": "Pull HubSpot Contacts",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nreturn items.map(item => {\n  const c = item.json;\n  const script = `Hi ${c.firstname}, this is a personalised message from ${$env.COMPANY_NAME}. We noticed your last activity with us was on ${c.last_activity_date}. We have something exciting to share specifically for ${c.company}.`;\n  return {\n    json: {\n      voice_id: $env.VOICE_ID,\n      script,\n      contact_id: c.hs_object_id,\n      delivery_channel: c.phone ? 'whatsapp' : 'email',\n      email: c.email,\n      phone: c.phone\n    }\n  };\n});"
+      },
+      "name": "Build Personalised Script",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://api.elevenlabs.io/v1/text-to-speech/{{ $json.voice_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {"name": "xi-api-key", "value": "={{ $env.ELEVENLABS_API_KEY }}"},
+            {"name": "Content-Type", "value": "application/json"}
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {"name": "text", "value": "={{ $json.script }}"},
+            {"name": "model_id", "value": "eleven_multilingual_v2"},
+            {"name": "voice_settings", "value": "={\"stability\": 0.75, \"similarity_boost\": 0.85, \"style\": 0.2}"}
+          ]
+        },
+        "options": {"response": {"response": {"responseFormat": "file"}}}
+      },
+      "name": "ElevenLabs TTS API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "operation": "upload",
+        "bucketName": "voice-campaign-audio",
+        "fileName": "={{ $json.contact_id }}/{{ $now.toISO() }}.mp3"
+      },
+      "name": "Upload to S3",
+      "type": "n8n-nodes-base.awsS3",
+      "typeVersion": 1,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [{"value1": "={{ $json.delivery_channel }}", "operation": "equals", "value2": "whatsapp"}]
+        }
+      },
+      "name": "Delivery Router",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1340, 300]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "resource": "contact",
+        "contactId": "={{ $json.contact_id }}",
+        "additionalFields": {
+          "properties": {
+            "property": [
+              {"name": "voice_campaign_sent_at", "value": "={{ $now.toISO() }}"},
+              {"name": "delivery_channel", "value": "={{ $json.delivery_channel }}"}
+            ]
+          }
+        }
+      },
+      "name": "Log Result to HubSpot",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2,
+      "position": [1560, 300]
+    }
+  ],
+  "connections": {
+    "Campaign Trigger": {"main": [[{"node": "Pull HubSpot Contacts", "type": "main", "index": 0}]]},
+    "Pull HubSpot Contacts": {"main": [[{"node": "Build Personalised Script", "type": "main", "index": 0}]]},
+    "Build Personalised Script": {"main": [[{"node": "ElevenLabs TTS API", "type": "main", "index": 0}]]},
+    "ElevenLabs TTS API": {"main": [[{"node": "Upload to S3", "type": "main", "index": 0}]]},
+    "Upload to S3": {"main": [[{"node": "Delivery Router", "type": "main", "index": 0}]]},
+    "Delivery Router": {
+      "main": [
+        [{"node": "Log Result to HubSpot", "type": "main", "index": 0}],
+        [{"node": "Log Result to HubSpot", "type": "main", "index": 0}]
+      ]
+    }
+  }
+}
